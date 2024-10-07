@@ -1,0 +1,9 @@
+*.http
+.idea/
+.vscode/
+.DS_Store
+.env
+*.http
+db*
+migrations/
+__pycache__/
