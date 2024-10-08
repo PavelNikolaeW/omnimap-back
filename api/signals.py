@@ -27,4 +27,7 @@ def limit_history_records(sender, instance, **kwargs):
 
     if history.count() > MAX_HISTORY:
         old_history = history[MAX_HISTORY:]
-        old_history.delete()
+
+        # Удаляем каждую запись по отдельности
+        for record in old_history:
+            record.delete()
