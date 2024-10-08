@@ -215,7 +215,7 @@ class LoadEmptyView(APIView):
         user = request.user
         if user.is_authenticated:
             block_ids = request.data.get('block_ids', [])
-            block_ids = [int(id) for id in block_ids]
+            block_ids = [id for id in block_ids]
             data = get_flat_map_blocks(user.id, block_ids)
             return Response(data, status=status.HTTP_200_OK)
 
