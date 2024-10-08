@@ -72,6 +72,7 @@ class RegisterView(APIView):
             new_block = Block.objects.create(
                 creator=user,
                 title=user.username,
+                data={'color': 'default_color'}
             )
             new_block.save()
             refresh = RefreshToken.for_user(user)
