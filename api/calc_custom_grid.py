@@ -125,8 +125,8 @@ def find_and_place_np(A, B):
 
 def set_grid(col, row):
     return [
-        f'grid-template-columns_{'1fr__' * col}',
-        f'grid-template-rows_auto__{'1fr__' * (row - 1)}'
+        f'grid-template-columns_{"1fr__" * col}',
+        f'grid-template-rows_auto__{"1fr__" * (row - 1)}'
     ]
 
 

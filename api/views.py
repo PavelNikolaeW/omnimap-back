@@ -256,9 +256,7 @@ class NewBlockView(APIView):
         user = request.user
         if user.is_authenticated:
             parent_block = get_object_or_404(Block, id=block_id)
-            print(block_id,     request.data)
-            if parent_block.editable_by_users.filter(id=user.id).exists():
-
+            if parent_block.creator == user or parent_block.editable_by_users.filter(id=user.id).exists():
                 new_block = Block.objects.create(
                     creator=user,
                     title=request.data.get('title', ''),

@@ -14,7 +14,7 @@ urlpatterns = [
     path('root-block/', RootBlockView.as_view(), name='root-block'),
     path('edit-block/<uuid:block_id>/', EditBlockView.as_view(), name='edit-block'),
     path('register/', RegisterView.as_view(), name='register'),
-    path('load-empty/', LoadEmptyView.as_view(), name='register'),
+    path('load-empty/', LoadEmptyView.as_view(), name='load-empty'),
     path('access/<uuid:block_id>/', AccessBlockView.as_view(), name='access-list'),
     path('search-block/', BlockSearchAPIView.as_view(), name='search-block')
 ]
