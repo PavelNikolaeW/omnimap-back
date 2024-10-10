@@ -29,13 +29,13 @@ MAX_HISTORY = 50
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', '193.227.240.214']
 INTERNAL_IPS = [
     '127.0.0.1',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для продакшена CORS_ALLOWED_ORIGINS
-
+CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
 # CORS_ALLOWED_ORIGINS = [
 #     ''
 # ]
@@ -46,7 +46,6 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
 }
-
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -68,7 +67,6 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
 }
-
 
 MIDDLEWARE = [
     'debug_toolbar.middleware.DebugToolbarMiddleware',
@@ -113,7 +111,7 @@ DATABASES = {
         'NAME': os.getenv('POSTGRES_NAME'),
         'USER': os.getenv('POSTGRES_USER', ''),
         'PASSWORD': os.getenv('POSTGRES_PASSWD', ''),
-        'HOST': 'localhost',
+        'HOST': os.getenv('POSTGRES_HOST', ''),
         'PORT': '5432',
     }
 }
@@ -150,7 +148,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'static'
+
+# STATICFILES_DIRS = [
+#     BASE_DIR / 'static',
+# ]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field

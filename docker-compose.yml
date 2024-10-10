@@ -1,0 +1,49 @@
+version: '3'
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_NAME}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mynetwork
+
+  block_api:
+    container_name: block_api_container
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_HOST=postgres
+    volumes:
+      - .:/usr/src/app
+    depends_on:
+      - postgres
+    networks:
+      - mynetwork
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ${FRONT_PATH}
+      dockerfile: Dockerfile
+    volumes:
+      - .:/usr/src/app
+    networks:
+      - mynetwork
+    ports:
+      - "3000:3000"
+
+networks:
+  mynetwork:
+    driver: bridge
+
+volumes:
+  postgres_data:
