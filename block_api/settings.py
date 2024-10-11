@@ -27,18 +27,15 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '')
 MAX_HISTORY = 50
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', '193.227.240.214']
+DEBUG = bool(os.environ.get("DJANGO_DEBUG", default=0))
+ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(",")
 INTERNAL_IPS = [
     '127.0.0.1',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для продакшена CORS_ALLOWED_ORIGINS
 CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
-# CORS_ALLOWED_ORIGINS = [
-#     ''
-# ]
+
 
 # Application definition
 
@@ -108,11 +105,12 @@ WSGI_APPLICATION = 'block_api.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('POSTGRES_NAME'),
-        'USER': os.getenv('POSTGRES_USER', ''),
-        'PASSWORD': os.getenv('POSTGRES_PASSWD', ''),
-        'HOST': os.getenv('POSTGRES_HOST', ''),
-        'PORT': '5432',
+
+        'NAME': os.getenv('SQL_NAME'),
+        'USER': os.getenv('SQL_USER', ''),
+        'PASSWORD': os.getenv('SQL_PASSWD', ''),
+        'HOST': os.getenv('SQL_HOST', ''),
+        'PORT': os.getenv('SQL_PORT', ''),
     }
 }
 

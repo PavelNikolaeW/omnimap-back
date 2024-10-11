@@ -4,9 +4,9 @@ services:
   postgres:
     image: postgres:13
     environment:
-      POSTGRES_DB: ${POSTGRES_NAME}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWD}
+      POSTGRES_DB: ${SQL_NAME}
+      POSTGRES_USER: ${SQL_USER}
+      POSTGRES_PASSWORD: ${SQL_PASSWD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -20,7 +20,7 @@ services:
     environment:
       - DEBUG=1
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - POSTGRES_HOST=postgres
+      - SQL_HOST=postgres
     volumes:
       - .:/usr/src/app
     depends_on:
