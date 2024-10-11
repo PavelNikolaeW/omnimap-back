@@ -23,8 +23,8 @@ User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
-INFORM_BLOCK_ID = '1ef849f0-b268-6f66-ae3f-256832c7dcca'
-INFORM_BLOCK_USER_ID = 2
+INFORM_BLOCK_ID = '1ef86ff1-63d7-6de2-8ced-209397083047'
+INFORM_BLOCK_USER_ID = 1
 
 
 class StandardResultsSetPagination(PageNumberPagination):
