@@ -1,0 +1,46 @@
+[
+    {
+        "uuid": "1ef88965-ce73-6b66-b0af-00f1e47c330e",
+        "title": "main_page",
+        "access_type": "inherited",
+        "creator": "main_page",
+        "data": {
+            "childOrder": [
+                "1ef88968-b72c-69e6-b0f7-d4dfc12875b5",
+                "1ef88967-a8ca-65ac-b370-68d35f9fed3f"
+            ]
+        },
+        "children": [
+            "1ef88968-b72c-69e6-b0f7-d4dfc12875b5",
+            "1ef88967-a8ca-65ac-b370-68d35f9fed3f"
+        ],
+        "visible_to_users": [],
+        "editable_by_users": []
+    },
+    {
+        "uuid": "1ef88967-a8ca-65ac-b370-68d35f9fed3f",
+        "title": "login",
+        "access_type": "inherited",
+        "creator": "main_page",
+        "data": {
+            "view": "auth",
+            "childOrder": []
+        },
+        "children": [],
+        "visible_to_users": [],
+        "editable_by_users": []
+    },
+    {
+        "uuid": "1ef88968-b72c-69e6-b0f7-d4dfc12875b5",
+        "title": "registration",
+        "access_type": "inherited",
+        "creator": "main_page",
+        "data": {
+            "view": "registration",
+            "childOrder": []
+        },
+        "children": [],
+        "visible_to_users": [],
+        "editable_by_users": []
+    }
+]
