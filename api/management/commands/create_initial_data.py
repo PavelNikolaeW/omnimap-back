@@ -19,5 +19,5 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('Суперпользователь создан.'))
 
             command = ImportBloksCommand()
-            command.handle(username=main_page_user.username, input_file='blocks_main_page.json')
+            command.handle(username=main_page_user.username, input_file='main_page.json')
 
