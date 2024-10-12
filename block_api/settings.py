@@ -29,12 +29,13 @@ MAX_HISTORY = 50
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = bool(os.environ.get("DJANGO_DEBUG", default=0))
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(",")
+
 INTERNAL_IPS = [
     '127.0.0.1',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для продакшена CORS_ALLOWED_ORIGINS
-CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
+# CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
 
 
 # Application definition

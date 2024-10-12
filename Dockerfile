@@ -7,6 +7,7 @@ COPY . ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     DJANGO_SETTINGS_MODULE=block_api.settings
 
 RUN chmod +x /block_api/entrypoint.sh

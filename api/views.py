@@ -23,9 +23,6 @@ User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
-INFORM_BLOCK_ID = '1ef86ff1-63d7-6de2-8ced-209397083047'
-INFORM_BLOCK_USER_ID = 1
-
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 10  # Количество объектов на страницу
@@ -161,8 +158,11 @@ class RootBlockView(APIView):
             data = get_flat_map_blocks(user.id, [block_id])
             data['root'] = data[block_id]
             return Response(data, status=status.HTTP_200_OK)
-        data = get_flat_map_blocks(INFORM_BLOCK_USER_ID, [INFORM_BLOCK_ID])
-        data['root'] = data[INFORM_BLOCK_ID]
+
+        admin = User.objects.get(username='main_page')
+        main_page_block = admin.blocks.first()
+        data = get_flat_map_blocks(admin.id, [main_page_block.id])
+        data['root'] = data[main_page_block.id]
         return Response(data, status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
 
 
