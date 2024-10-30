@@ -41,8 +41,8 @@ CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для прода�
 # Application definition
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
+    'ACCESS_TOKEN_LIFETIME': timedelta(weeks=56),
+    'REFRESH_TOKEN_LIFETIME': timedelta(weeks=60),
 }
 
 INSTALLED_APPS = [
