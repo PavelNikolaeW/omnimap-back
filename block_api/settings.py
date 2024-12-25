@@ -28,6 +28,7 @@ MAX_HISTORY = 50
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = bool(os.environ.get("DJANGO_DEBUG", default=0))
+# DEBUG = False
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(",")
 
 INTERNAL_IPS = [
@@ -43,6 +44,7 @@ CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для прода�
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(weeks=56),
     'REFRESH_TOKEN_LIFETIME': timedelta(weeks=60),
+    "ALGORITHM": "HS256",
 }
 
 INSTALLED_APPS = [
@@ -64,7 +66,16 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_RENDERER_CLASSES': (
+        'rest_framework.renderers.JSONRenderer',
+    ),
+    'DEFAULT_PARSER_CLASSES': (
+        'rest_framework.parsers.JSONParser',
+    ),
+    'JSON_ENCODER': 'api.models.CustomJSONEncoder'
 }
+
+DEFAULT_JSON_ENCODER = 'api.models.CustomJSONEncoder'
 
 MIDDLEWARE = [
     'debug_toolbar.middleware.DebugToolbarMiddleware',
@@ -84,7 +95,7 @@ ROOT_URLCONF = 'block_api.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -112,6 +123,7 @@ DATABASES = {
         'PASSWORD': os.getenv('SQL_PASSWD', ''),
         'HOST': os.getenv('SQL_HOST', ''),
         'PORT': os.getenv('SQL_PORT', ''),
+        'CONN_MAX_AGE': 600,
     }
 }
 
@@ -193,3 +205,19 @@ LOGGING = {
         },
     },
 }
+
+LIMIT_BLOCKS = 1000
+
+
+RABBITMQ_USER = os.environ.get('RABBITMQ_USER')
+RABBITMQ_PASS = os.environ.get('RABBITMQ_PASS')
+RABBITMQ_HOST_PORT = os.environ.get('RABBITMQ_HOST_PORT')
+RABBITMQ_EXCHANGES = os.environ.get('RABBITMQ_EXCHANGES')
+RABBITMQ_QUEUE = os.environ.get('RABBITMQ_QUEUE')
+RABBITMQ_ROUTING_KEY = os.environ.get('RABBITMQ_ROUTING_KEY')
+
+CELERY_BROKER_URL = f'amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST_PORT}//'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE

@@ -1,8 +1,11 @@
 import json
+
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
-from django.contrib.auth.models import User
 from api.models import Block
 from uuid import UUID
+
+User = get_user_model()
 
 
 class Command(BaseCommand):
@@ -69,4 +72,3 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(f'Все блоки успешно импортированы и восстановлены для пользователя {username}.'))
-

@@ -1,7 +1,11 @@
 import json
+
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
-from django.contrib.auth.models import User
 from api.models import Block
+
+User = get_user_model()
+
 
 class Command(BaseCommand):
     help = 'Экспорт данных блоков для указанного пользователя в JSON файл с поддержкой UUID'

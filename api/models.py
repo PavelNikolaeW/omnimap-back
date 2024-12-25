@@ -1,17 +1,18 @@
 from pprint import pprint
 
 import uuid6
+from django.contrib.auth import get_user_model
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from simple_history.models import HistoricalRecords
-
-from api.calc_custom_grid import custom_grid_update
+from api.utils.calc_custom_grid import custom_grid_update
 
 ACCESS_TYPE_CHOICES = (('private', 'Private'),
                        ('public', 'Public'),
                        ('inherited', 'Inherited'),
                        ('public_ed', 'Public Editable'))
 
-
+User = get_user_model()
 class UUIDModel(models.Model):
     id = models.CharField(
         primary_key=True,
@@ -34,6 +35,7 @@ class Block(UUIDModel):
 
     data = models.JSONField(blank=True, null=True, default=dict)
     title = models.CharField(max_length=255, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     history = HistoricalRecords()
 
@@ -45,16 +47,19 @@ class Block(UUIDModel):
         if child_id not in child_order:
             child_order.append(child_id)
             self.data['childOrder'] = child_order
-            self.save(update_fields=['data'])
-            self.call_custom_grid_update()
+        if custom_grid := self.data.get('customGrid'):
+            custom_grid_update(custom_grid, child_id)
+        self.save(update_fields=['data'])
 
     def update_child_order_on_remove(self, child_id):
         child_order = self.data.get('childOrder', [])
         if child_id in child_order:
             child_order.remove(child_id)
             self.data['childOrder'] = child_order
-            self.save(update_fields=['data'])
-            self.call_custom_grid_update()
+        if custom_grid := self.data.get('customGrid', {}).get('childrenPositions'):
+            pprint(custom_grid)
+            custom_grid.pop(child_id, None)
+        self.save(update_fields=['data'])
 
     def set_child_order(self, new_order):
         """
@@ -65,40 +70,6 @@ class Block(UUIDModel):
         if set(new_order) != set(current_children_ids):
             raise ValueError("Новый порядок должен содержать все текущие дочерние блоки и только их.")
         self.data['childOrder'] = new_order
-        self.save(update_fields=['data'])
-        self.call_custom_grid_update()
-
-    def get_ordered_children(self):
-        """
-        Возвращает дочерние блоки в порядке, заданном в childOrder.
-        """
-        child_order = self.data.get('childOrder', [])
-        when_statements = [models.When(id=child_id, then=pos) for pos, child_id in enumerate(child_order)]
-        ordering = models.Case(*when_statements, default=len(child_order))
-        return list(Block.objects.filter(id__in=child_order).order_by(ordering).values_list('id', flat=True))
-
-    def update_data_based_on_children(self):
-        """
-        Обновляет поле `data`, включая `childOrder`.
-        """
-        # Инициализируем childOrder, если он отсутствует
-        if 'childOrder' not in self.data:
-            self.data['childOrder'] = list(self.children.values_list('id', flat=True))
-
-        # Обновляем childOrder, чтобы он соответствовал текущим дочерним блокам
-        current_children_ids = set(self.children.values_list('id', flat=True))
-        child_order = self.data.get('childOrder', [])
-        child_order_set = set(child_order)
-
-        # Добавляем новые дочерние блоки в конец списка
-        new_children = current_children_ids - child_order_set
-        if new_children:
-            child_order.extend(new_children)
-
-        # Удаляем отсутствующие дочерние блоки из списка
-        updated_child_order = [child_id for child_id in child_order if child_id in current_children_ids]
-
-        self.data['childOrder'] = updated_child_order
         self.save(update_fields=['data'])
         self.call_custom_grid_update()
 
@@ -136,3 +107,10 @@ class Block(UUIDModel):
             self.data['titleIsVisible'] = False
             # Снова сохраняем блок, так как могли изменить title и data
             super().save()
+
+
+class CustomJSONEncoder(DjangoJSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, uuid6.UUID):
+            return str(obj)
+        return super().default(obj)
