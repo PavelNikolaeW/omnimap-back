@@ -206,7 +206,7 @@ LOGGING = {
     },
 }
 
-LIMIT_BLOCKS = 1000
+LIMIT_BLOCKS = 2000
 
 
 RABBITMQ_USER = os.environ.get('RABBITMQ_USER')

@@ -66,3 +66,13 @@ class BlockSerializer(serializers.ModelSerializer):
 
     def get_text(self, obj):
         return obj.data.get('text', '')
+
+
+def get_object_for_block(block, children=None):
+    return {
+        'id': str(block.id),
+        'title': block.title,
+        'data': block.data,
+        'updated_at': block.updated_at,
+        'children': children if isinstance(children, (list, str)) else [str(child.id) for child in block.children.all()]
+    }

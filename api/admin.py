@@ -26,7 +26,7 @@ class BlockAdminForm(forms.ModelForm):
 
 
 class BlockAdmin(SimpleHistoryAdmin):
-    list_display = ('id', 'creator', 'updated_at', 'access_type', 'title')
+    list_display = ('id', 'title', 'creator', 'updated_at', 'access_type', 'title')
     list_filter = ('access_type', 'creator', 'title', ChildIDFilter)
     search_fields = ('creator__username', 'access_type')
     filter_horizontal = ('visible_to_users', 'editable_by_users', 'children')

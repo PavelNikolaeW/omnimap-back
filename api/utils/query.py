@@ -19,7 +19,7 @@ get_blocks_query = f'''WITH RECURSIVE cte(
         b.access_type,
         CASE
             WHEN b.access_type != 'inherited' THEN b.access_type
-            ELSE 'private'  -- Default to 'private' if no parent for inheritance
+            ELSE 'public'  -- Default to 'private' if no parent for inheritance
         END AS effective_access_type,
         ARRAY[b.id]::uuid[] AS path,  -- To detect cycles
         0 AS depth,
@@ -93,3 +93,26 @@ WHERE (
 GROUP BY cte.id, cte.title, cte.data, cte.can_be_edited_by_others, cte.updated_at
 LIMIT {settings.LIMIT_BLOCKS};'''
 
+
+is_descendant_query = '''
+WITH RECURSIVE block_relatives AS (
+    -- Начальный блок для поиска родства
+    SELECT id, id = %s AS is_target
+    FROM api_block
+    WHERE id = %s -- ID первого блока
+
+    UNION ALL
+
+    -- Рекурсивное соединение для поиска всех связанных блоков
+    SELECT b.id, b.id = %s -- Проверяем, является ли блок целевым
+    FROM api_block b
+    INNER JOIN api_block_children bc ON b.id = bc.to_block_id -- Связь через дочерние блоки
+    INNER JOIN block_relatives br ON bc.from_block_id = br.id -- Рекурсивное соединение с уже найденными блоками
+    WHERE b.id != br.id AND NOT br.is_target -- Защита от циклов и остановка при нахождении цели
+)
+-- Проверяем, существует ли целевой блок в рекурсивно найденных данных
+SELECT EXISTS (
+    SELECT 1
+    FROM block_relatives
+    WHERE is_target
+);'''

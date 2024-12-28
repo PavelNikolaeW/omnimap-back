@@ -1,5 +1,6 @@
 import json
 import logging
+from pprint import pprint
 
 import uuid6
 from django.contrib.auth import get_user_model
@@ -18,9 +19,9 @@ from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
 from .models import Block, ACCESS_TYPE_CHOICES
 from .serializers import (RegisterSerializer,
-                          CustomTokenObtainPairSerializer, BlockSerializer)
-from api.utils.query import get_blocks_query
-from .tasks import send_message_block_update, send_message_subscribe_user
+                          CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block)
+from api.utils.query import get_blocks_query, is_descendant_query
+from .tasks import send_message_block_update, send_message_subscribe_user, send_message_access_update
 
 User = get_user_model()
 
@@ -127,7 +128,7 @@ class AccessBlockView(APIView):
             if editable_for:
                 editable_for_user = get_object_or_404(User, username=editable_for)
                 block.editable_by_users.add(editable_for_user)
-            # todo отправлять сообщение об обнолвении
+            send_message_access_update.delay(block_id, [u.id for u in block.visible_to_users.all()])
             return Response({
                 'access_type': block.access_type,
                 'visible_to_users': [u.username for u in block.visible_to_users.all() if u.id != user.id],
@@ -151,7 +152,7 @@ class AccessBlockView(APIView):
             if remove_edit:
                 editable_for_user = get_object_or_404(User, username=remove_edit)
                 block.editable_by_users.remove(editable_for_user)
-
+            send_message_access_update.delay(block_id, [u.id for u in block.visible_to_users.all()])
             return Response({
                 'access_type': block.access_type,
                 'visible_to_users': [u.username for u in block.visible_to_users.all() if u.id != user.id],
@@ -167,7 +168,8 @@ class RootBlockView(APIView):
             block_id = user.blocks.first().id
             data, blocks_to_subscribe = get_flat_map_blocks(user.id, [block_id])
             data['root'] = data[block_id]
-            send_message_subscribe_user.delay(blocks_to_subscribe, user.username)
+            if len(blocks_to_subscribe) > 0:
+                send_message_subscribe_user.delay(blocks_to_subscribe, user.id)
             return Response(data, status=status.HTTP_200_OK)
 
         main_page_user = User.objects.get(username='main_page')
@@ -177,58 +179,11 @@ class RootBlockView(APIView):
         return Response(data, status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
 
 
-class MoveBlockView(APIView):
-
-    @transaction.atomic
-    def post(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            child = get_object_or_404(Block, id=block_id)
-            if user == child.creator or child.editable_by_users.filter(
-                    id=user.id).exists() or child.access_type == 'public_ed':
-
-                new_parent_id = request.data.get('new_parent_id')
-                old_parent_id = request.data.get('old_parent_id')
-                child_order = request.data.get('childOrder')
-
-                print(f"{new_parent_id=} {old_parent_id=}")
-
-                if new_parent_id == old_parent_id:
-                    parent = get_object_or_404(Block, id=new_parent_id)
-                    parent.set_child_order(child_order)
-                    res = [{
-                        'id': parent.id, 'updated_at': parent.updated_at,
-                        'children': [child.id for child in parent.children.all()],
-                        'data': parent.data,
-                        'title': parent.title
-                    }]
-                else:
-                    old_parent = get_object_or_404(Block, id=old_parent_id)
-                    old_parent.children.remove(child)
-
-                    new_parent = get_object_or_404(Block, id=new_parent_id)
-                    new_parent.children.add(child)
-                    new_parent.set_child_order(child_order)
-                    res = [{
-                        'id': new_parent.id, 'children': [child.id for child in new_parent.children.all()],
-                        'data': new_parent.data,
-                        'updated_at': new_parent.updated_at,
-                        'title': new_parent.title
-                    }, {
-                        'id': old_parent.id, 'children': [child.id for child in old_parent.children.all()],
-                        'data': old_parent.data,
-                        'updated_at': old_parent.updated_at,
-                        'title': old_parent.title
-                    }]
-                return Response(res, status=status.HTTP_200_OK)
-
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
-
-
 class LoadEmptyView(APIView):
     def post(self, request):
         user = request.user
         block_ids = request.data.get('block_ids', [])
+        print(block_ids)
         if not block_ids:
             return Response({"error": "No block_ids provided"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -245,8 +200,40 @@ class LoadEmptyView(APIView):
 
         data, blocks_to_subscribe = get_flat_map_blocks(user.id, accessible_blocks)
         data.update(blocks_403)
-        send_message_subscribe_user.delay(blocks_to_subscribe, user.username)
+        if len(blocks_to_subscribe) > 0:
+            send_message_subscribe_user.delay(blocks_to_subscribe, user.id)
         return Response(data, status=status.HTTP_200_OK)
+
+
+class MoveBlockView(APIView):
+
+    @transaction.atomic
+    def post(self, request, block_id):
+        user = request.user
+        if user.is_authenticated:
+            child = get_object_or_404(Block, id=block_id)
+            if user == child.creator or child.editable_by_users.filter(
+                    id=user.id).exists() or child.access_type == 'public_ed':
+
+                new_parent_id = request.data.get('new_parent_id')
+                old_parent_id = request.data.get('old_parent_id')
+                child_order = request.data.get('childOrder')
+
+                if new_parent_id == old_parent_id:
+                    parent = get_object_or_404(Block, id=new_parent_id)
+                    parent.set_child_order(child_order)
+                    res = [get_object_for_block(parent)]
+                else:
+                    old_parent = get_object_or_404(Block, id=old_parent_id)
+                    old_parent.children.remove(child)
+
+                    new_parent = get_object_or_404(Block, id=new_parent_id)
+                    new_parent.children.add(child)
+                    new_parent.set_child_order(child_order)
+                    res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
+                return Response(res, status=status.HTTP_200_OK)
+
+        return Response({}, status=status.HTTP_403_FORBIDDEN)
 
 
 class CreateLinkBlockView(APIView):
@@ -269,12 +256,7 @@ class CreateLinkBlockView(APIView):
                     })
                     block.children.add(new_link)
 
-                new_blocks.append({'id': block.id,
-                                   'data': block.data,
-                                   'title': block.title,
-                                   'updated_at': block.updated_at,
-                                   'children': [child.id for child in block.children.all()]})
-                # todo подписка на обновления
+                new_blocks.append(get_object_for_block(block))
                 return Response(new_blocks,
                                 status=status.HTTP_200_OK)
         return Response({}, status=status.HTTP_403_FORBIDDEN)
@@ -294,17 +276,9 @@ class NewBlockView(APIView):
                 )
                 new_block.save()
                 parent_block.children.add(new_block)
-                send_message_block_update.delay(parent_block.id,
-                                                {'children': [child.id for child in parent_block.children.all()]})
+                send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
 
-                return Response(
-                    [
-                        {'id': new_block.id, 'title': new_block.title, 'data': new_block.data,
-                         'updated_at': new_block.updated_at, 'children': []},
-                        {'id': parent_block.id, 'title': parent_block.title, 'updated_at': parent_block.updated_at,
-                         'data': parent_block.data,
-                         'children': [child.id for child in parent_block.children.all()]}
-                    ],
+                return Response([get_object_for_block(new_block, []), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
         return Response({}, status=status.HTTP_403_FORBIDDEN)
 
@@ -432,14 +406,8 @@ class CopyBlockView(APIView):
                     return Response({'error': error_text}, status=status.HTTP_400_BAD_REQUEST)
 
                 block_dest.children.add(*Block.objects.filter(id__in=[mapped[old_id] for old_id in ids]))
-                copies[str(block_dest.id)] = {
-                    'id': block_dest.id,
-                    'title': block_dest.title,
-                    'data': block_dest.data,
-                    'updated_at': block_dest.updated_at,
-                    'children': [str(child.id) for child in block_dest.children.all()]
-                }
-                #     todo отправлять сообщение об обновлвении
+                copies[str(block_dest.id)] = get_object_for_block(block_dest)
+                send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
                 return Response(copies,
                                 status=status.HTTP_200_OK)
         return Response({}, status=status.HTTP_403_FORBIDDEN)
@@ -461,16 +429,8 @@ class EditBlockView(APIView):
                 if block.data.get('customGrid', {}).get('reset'):
                     block.data.pop('customGrid')
                 block.save()
-                return Response(
-                    {
-                        'id': block.id,
-                        'title': block.title,
-                        'data': block.data,
-                        'updated_at': block.updated_at,
-                        'children': [child.id for child in block.children.all()]
-                    },
-                    status=status.HTTP_200_OK)
-        #     todo отправлять сообщение об обновлвении
+                send_message_block_update.delay(block.id, get_object_for_block(block))
+                return Response(get_object_for_block(block), status=status.HTTP_200_OK)
         return Response({}, status=status.HTTP_403_FORBIDDEN)
 
     @transaction.atomic
@@ -479,19 +439,12 @@ class EditBlockView(APIView):
         if user.is_authenticated:
             remove_id = request.data.get('removeId')
             parent_id = request.data.get('parentId')
+
             block = get_object_or_404(Block, id=parent_id.split('*')[-1])
             child = get_object_or_404(Block, id=remove_id)
             if user == block.creator or block.editable_by_users.filter(id=user.id).exists():
                 block.children.remove(child)
-                return Response(
-                    {
-                        'id': block.id,
-                        'title': block.title,
-                        'data': block.data,
-                        'updated_at': block.updated_at,
-                        'children': [child.id for child in block.children.all()]
-                    },
-                    status=status.HTTP_200_OK)
+                return Response(get_object_for_block(block), status=status.HTTP_200_OK)
             #     todo отправлять сообщение об обновлвении
         return Response({}, status=status.HTTP_403_FORBIDDEN)
 
@@ -503,7 +456,7 @@ def get_flat_map_blocks(user_id, block_ids):
         json_fields = ['data']  # Поля, ожидаемые как JSON
 
         result = {}
-        block_to_subscribe = []
+        blocks_to_subscribe = []
         for row in cursor.fetchall():
             row_dict = dict(zip(columns, row))
 
@@ -514,11 +467,17 @@ def get_flat_map_blocks(user_id, block_ids):
                 except json.JSONDecodeError:
                     print(f"Error decoding JSON for {field} in row {row[0]}")
             if row_dict['can_be_edited_by_others']:
-                block_to_subscribe.append(row_dict)
+                blocks_to_subscribe.append(row_dict['id'])
             # Собираем результат, используя id блока в качестве ключа
             if row[0] in result:
                 result[row[0]]['children'].extend(row_dict['children'])
                 result[row[0]]['children'] = list(set(result[row[0]]['children']))  # Убираем дубликаты
             else:
                 result[row[0]] = row_dict
-        return result, block_to_subscribe
+        return result, blocks_to_subscribe
+
+def is_descendant(parent_idchild_id, descendant_id):
+    with connection.cursor() as cursor:
+        cursor.execute(is_descendant_query, [child_id, parent_id, child_id])
+        result = cursor.fetchone()
+    return result[0]
