@@ -1,118 +1,219 @@
 from django.conf import settings
 
+# Рекурсивный запрос:
+# 1) В "root" берем все корни (creator_id = user_id и parent IS NULL).
+#    - root_id = id (чтобы помнить, кто корень данного ряда)
+# 2) В "cte" сначала берем сами корни, потом всех потомков, указывая root_id неизменным.
+get_all_trees_query = f"""
+WITH RECURSIVE 
+    root AS (
+        -- Находим корневые блоки, к которым у пользователя есть доступ
+        SELECT DISTINCT 
+            b.id AS root_id,
+            b.id,
+            b.parent_id,
+            b.title,
+            b.data,
+            b.updated_at
+        FROM api_block b
+        LEFT JOIN api_blockpermission bp
+            ON b.id = bp.block_id
+            AND bp.user_id = %(user_id)s
+        WHERE 
+            b.creator_id = %(creator_id)s
+            AND b.parent_id IS NULL
+    ),
+    cte AS (
+        -- Шаг 1: сами корни
+        SELECT 
+            r.root_id,
+            r.id,
+            r.parent_id,
+            r.title,
+            r.data,
+            r.updated_at
+        FROM root r
 
-get_blocks_query = f'''WITH RECURSIVE cte(
-    id,
-    title,
-    access_type,
-    effective_access_type,
-    path,
-    depth,
-    data,
-    can_be_edited_by_others,
-    updated_at
-) AS (
-    -- Base case: initial blocks
-    SELECT
-        b.id,
-        b.title,
-        b.access_type,
-        CASE
-            WHEN b.access_type != 'inherited' THEN b.access_type
-            ELSE 'public'  -- Default to 'private' if no parent for inheritance
-        END AS effective_access_type,
-        ARRAY[b.id]::uuid[] AS path,  -- To detect cycles
-        0 AS depth,
-        b.data,
-        -- Determine if the block can be edited by others
-        CASE
-            WHEN b.access_type = 'public' THEN TRUE
-            WHEN EXISTS (
-                SELECT 1
-                FROM api_block_visible_to_users v
-                WHERE v.block_id = b.id
-                  AND v.user_id != %(user_id)s
-            ) THEN TRUE
-            ELSE FALSE
-        END AS can_be_edited_by_others,
-        b.updated_at
-    FROM api_block b
-    WHERE b.id = ANY(%(block_ids)s)  -- Initial block IDs (array of UUIDs)
+        UNION ALL
 
-    UNION ALL
-
-    -- Recursive case: traverse child blocks
-    SELECT
-        child_b.id,
-        child_b.title,
-        child_b.access_type,
-        CASE
-            WHEN child_b.access_type != 'inherited' THEN child_b.access_type
-            ELSE parent_cte.effective_access_type
-        END AS effective_access_type,
-        parent_cte.path || child_b.id::uuid,
-        parent_cte.depth + 1,
-        child_b.data,
-        -- Determine if the child block can be edited by others
-        CASE
-            WHEN child_b.access_type = 'public' THEN TRUE
-            WHEN EXISTS (
-                SELECT 1
-                FROM api_block_visible_to_users v
-                WHERE v.block_id = child_b.id
-                  AND v.user_id != %(user_id)s
-            ) THEN TRUE
-            WHEN parent_cte.can_be_edited_by_others THEN TRUE
-            ELSE FALSE
-        END AS can_be_edited_by_others,
-        child_b.updated_at  -- Добавляем updated_at
-    FROM cte parent_cte
-    JOIN api_block_children c ON c.from_block_id = parent_cte.id
-    JOIN api_block child_b ON child_b.id = c.to_block_id
-    WHERE parent_cte.depth < 100  -- Limit recursion depth
-      AND NOT (child_b.id::uuid = ANY(parent_cte.path))  -- Prevent cycles
-)
+        -- Шаг 2: рекурсивно добавляем потомков с учётом разрешений
+        SELECT
+            cte.root_id,
+            b.id,
+            b.parent_id,
+            b.title,
+            b.data,
+            b.updated_at
+        FROM api_block b
+        LEFT JOIN api_blockpermission bp
+            ON b.id = bp.block_id
+            AND bp.user_id = %(user_id)s
+        JOIN cte 
+            ON b.parent_id = cte.id
+        WHERE 
+            (bp.permission IS NULL OR bp.permission != 'deny') -- Исключаем запрещённые блоки
+    ),
+    child_counts AS (
+        -- Считаем количество детей для каждого блока
+        SELECT parent_id, COUNT(*) AS total_children
+        FROM api_block
+        GROUP BY parent_id
+    )
 SELECT
+    cte.root_id,
     cte.id,
+    cte.parent_id,
     cte.title,
     cte.data,
-    cte.can_be_edited_by_others,
     cte.updated_at,
-    ARRAY_REMOVE(ARRAY_AGG(DISTINCT c.to_block_id), NULL) AS children
+    COALESCE(child_counts.total_children, 0) AS total_children
 FROM cte
-LEFT JOIN api_block_children c ON c.from_block_id = cte.id
-WHERE (
-        cte.effective_access_type = 'public' OR
-        (cte.effective_access_type = 'private' AND EXISTS (
-            SELECT 1
-            FROM api_block_visible_to_users v
-            WHERE v.block_id = cte.id
-              AND v.user_id = %(user_id)s
-        ))
-    )
-GROUP BY cte.id, cte.title, cte.data, cte.can_be_edited_by_others, cte.updated_at
-LIMIT {settings.LIMIT_BLOCKS};'''
+LEFT JOIN child_counts 
+    ON cte.id = child_counts.parent_id
+LIMIT {settings.LIMIT_BLOCKS};
+"""
 
-
-is_descendant_query = '''
-WITH RECURSIVE block_relatives AS (
-    -- Начальный блок для поиска родства
-    SELECT id, id = %s AS is_target
-    FROM api_block
-    WHERE id = %s -- ID первого блока
+load_empty_blocks_query = f"""
+WITH RECURSIVE block_hierarchy AS (
+    -- Начальная выборка (ANCHOR)
+    SELECT
+        b.id,
+        b.parent_id,
+        b.title,
+        b.data,
+        b.updated_at,
+        1 AS depth,
+        CASE 
+            WHEN bp_deny.block_id IS NOT NULL THEN 'deny'
+            WHEN bp_other.permission IS NOT NULL THEN bp_other.permission
+            ELSE 'deny'
+        END AS permission
+    FROM api_block AS b
+    LEFT JOIN api_blockpermission AS bp_deny
+        ON b.id = bp_deny.block_id
+        AND bp_deny.user_id = %(user_id)s
+        AND bp_deny.permission = 'deny'
+    LEFT JOIN (
+        SELECT bp.block_id, bp.permission
+        FROM api_blockpermission AS bp
+        WHERE bp.user_id = %(user_id)s
+          AND bp.permission != 'deny'
+    ) AS bp_other
+        ON b.id = bp_other.block_id
+    WHERE
+        b.id = ANY(%(block_ids)s)
 
     UNION ALL
 
-    -- Рекурсивное соединение для поиска всех связанных блоков
-    SELECT b.id, b.id = %s -- Проверяем, является ли блок целевым
-    FROM api_block b
-    INNER JOIN api_block_children bc ON b.id = bc.to_block_id -- Связь через дочерние блоки
-    INNER JOIN block_relatives br ON bc.from_block_id = br.id -- Рекурсивное соединение с уже найденными блоками
-    WHERE b.id != br.id AND NOT br.is_target -- Защита от циклов и остановка при нахождении цели
+    -- Рекурсивная часть (RECURSIVE)
+    SELECT
+        c.id,
+        c.parent_id,
+        c.title,
+        c.data,
+        c.updated_at,
+        bh.depth + 1 AS depth,
+        CASE 
+            WHEN bp_deny2.block_id IS NOT NULL THEN 'deny'
+            WHEN bp_other2.permission IS NOT NULL THEN bp_other2.permission
+            ELSE 'deny'
+        END AS permission
+    FROM api_block AS c
+    LEFT JOIN api_blockpermission AS bp_deny2
+        ON c.id = bp_deny2.block_id
+        AND bp_deny2.user_id = %(user_id)s
+        AND bp_deny2.permission = 'deny'
+    LEFT JOIN (
+        SELECT bp.block_id, bp.permission
+        FROM api_blockpermission AS bp
+        WHERE bp.user_id = %(user_id)s
+          AND bp.permission != 'deny'
+    ) AS bp_other2
+        ON c.id = bp_other2.block_id
+    INNER JOIN block_hierarchy AS bh
+        ON c.parent_id = bh.id
+    WHERE
+        bh.permission != 'deny'  -- Останавливаем рекурсию, если у родителя нет прав
+        AND bh.depth < %(max_depth)s
 )
--- Проверяем, существует ли целевой блок в рекурсивно найденных данных
-SELECT EXISTS (
-    SELECT 1
-    FROM block_relatives
-    WHERE is_target
-);'''
+SELECT
+    id,
+    parent_id,
+    title,
+    data,
+    updated_at,
+    depth,
+    permission
+FROM block_hierarchy;"""
+
+recursive_set_block_access_query = '''
+WITH RECURSIVE subblocks AS (
+    -- Шаг 1: только если у инициатора есть 'edit_access' на стартовый блок
+    SELECT b.id
+    FROM api_block b
+    JOIN api_blockpermission bp 
+      ON b.id = bp.block_id
+    WHERE b.id = %(start_block_id)s
+      AND bp.user_id = %(initiator_id)s
+      AND bp.permission IN ('edit_ac', 'delete')
+
+    UNION ALL
+
+    -- Шаг 2: рекурсивно спускаемся к потомкам, проверяя 'edit_access' 
+    SELECT child.id
+    FROM api_block child
+    JOIN api_blockpermission bp_child
+      ON child.id = bp_child.block_id
+    JOIN subblocks sb 
+      ON child.parent_id = sb.id
+    WHERE bp_child.user_id = %(initiator_id)s
+      AND bp_child.permission IN ('edit_ac', 'delete')
+)
+INSERT INTO api_blockpermission (block_id, user_id, permission)
+SELECT s.id AS block_id, %(target_user_id)s AS user_id, %(new_permission)s AS permission
+FROM subblocks s
+ON CONFLICT (block_id, user_id)
+DO UPDATE SET permission = EXCLUDED.permission
+RETURNING block_id;'''
+
+
+delete_tree_query = """WITH RECURSIVE block_hierarchy AS (
+    -- Начальная выборка (ANCHOR)
+    SELECT
+        b.id,
+        b.parent_id,
+        CASE 
+            WHEN bp_delete.block_id IS NOT NULL THEN 'delete'
+            ELSE 'deny'
+        END AS permission
+    FROM api_block AS b
+    LEFT JOIN api_blockpermission AS bp_delete
+        ON b.id = bp_delete.block_id
+        AND bp_delete.user_id = %(user_id)s
+        AND bp_delete.permission = 'delete'
+    WHERE b.id = %(block_id)s
+    
+    UNION ALL
+    
+    -- Рекурсивная часть (RECURSIVE)
+    SELECT
+        c.id,
+        c.parent_id,
+        CASE 
+            WHEN bp_delete2.block_id IS NOT NULL THEN 'delete'
+            ELSE 'deny'
+        END AS permission
+    FROM api_block AS c
+    LEFT JOIN api_blockpermission AS bp_delete2
+        ON c.id = bp_delete2.block_id
+        AND bp_delete2.user_id = %(user_id)s
+        AND bp_delete2.permission = 'delete'
+    INNER JOIN block_hierarchy AS bh
+        ON c.parent_id = bh.id
+    WHERE bh.permission = 'delete' -- Продолжаем только если у родителя есть право на удаление
+)
+SELECT
+    bh.id
+FROM block_hierarchy AS bh
+WHERE bh.permission = 'delete'; -- Возвращаем только блоки, на которые у пользователя есть право
+"""

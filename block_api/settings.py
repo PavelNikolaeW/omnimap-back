@@ -72,7 +72,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': (
         'rest_framework.parsers.JSONParser',
     ),
-    'JSON_ENCODER': 'api.models.CustomJSONEncoder'
+    'JSON_ENCODER': 'api.models.CustomJSONEncoder',
 }
 
 DEFAULT_JSON_ENCODER = 'api.models.CustomJSONEncoder'
@@ -117,14 +117,22 @@ WSGI_APPLICATION = 'block_api.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-
         'NAME': os.getenv('SQL_NAME'),
         'USER': os.getenv('SQL_USER', ''),
         'PASSWORD': os.getenv('SQL_PASSWD', ''),
         'HOST': os.getenv('SQL_HOST', ''),
-        'PORT': os.getenv('SQL_PORT', ''),
+        'PORT': 5433,
         'CONN_MAX_AGE': 600,
-    }
+    },
+    # 'target': {
+    #     'ENGINE': 'django.db.backends.postgresql',
+    #     'NAME': os.getenv('SQL_NAME'),
+    #     'USER': os.getenv('SQL_USER', ''),
+    #     'PASSWORD': os.getenv('SQL_PASSWD', ''),
+    #     'HOST': os.getenv('SQL_HOST', ''),
+    #     'PORT': 5432,
+    #     'CONN_MAX_AGE': 600,
+    # },
 }
 
 # Password validation
@@ -150,7 +158,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Europe/Moscow'
 
 USE_I18N = True
 
@@ -206,7 +214,8 @@ LOGGING = {
     },
 }
 
-LIMIT_BLOCKS = 2000
+LIMIT_BLOCKS = 1000
+MAX_DEPTH_LOAD = 5
 
 
 RABBITMQ_USER = os.environ.get('RABBITMQ_USER')
@@ -217,6 +226,10 @@ RABBITMQ_QUEUE = os.environ.get('RABBITMQ_QUEUE')
 RABBITMQ_ROUTING_KEY = os.environ.get('RABBITMQ_ROUTING_KEY')
 
 CELERY_BROKER_URL = f'amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST_PORT}//'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_RESULT_EXPIRES = 3600
+CELERY_TASK_SOFT_TIME_LIMIT = 300
+CELERY_TASK_TIME_LIMIT = 360
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

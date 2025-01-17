@@ -6,3 +6,4 @@
 *.http
 db*
 __pycache__/
+migrations/

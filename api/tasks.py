@@ -1,10 +1,12 @@
-# myapp/tasks.py
+from datetime import datetime
 
 from celery import shared_task
 from kombu import Connection, Exchange, Producer
 from django.conf import settings
-import uuid
 import json
+from django.db import connection
+
+from api.utils.query import recursive_set_block_access_query
 
 # Настройки RabbitMQ
 RABBITMQ_URL = settings.CELERY_BROKER_URL
@@ -17,17 +19,16 @@ exchange = Exchange(EXCHANGE_NAME, type='direct')
 
 
 # celery -A block_api worker --loglevel=info
-
+# TODO очищать redis от id старых задач
 @shared_task(bind=True, max_retries=3)
 def send_message_block_update(self, block_uuid, block_data):
     block_data = {
         'id': str(block_data['id']),
         'title': block_data['title'],
         'data': json.dumps(block_data['data']),
-        'updated_at': str(block_data['updated_at']),
+        'updated_at': int(datetime.fromisoformat(str(block_data['updated_at'])).timestamp()),
         'children': json.dumps(block_data['children'])
     }
-    print(block_data)
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)
@@ -72,14 +73,17 @@ def send_message_subscribe_user(self, block_uuids, user_id):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_access_update(self, block_uuid, user_ids):
+def send_message_access_update(self, block_uuids, user_id, permission, start_block_id):
+
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)
             message = {
                 'action': 'update_access',
-                'block_uuid': str(block_uuid),
-                'user_ids': user_ids
+                'block_uuids': block_uuids,
+                'user_id': user_id,
+                'permission': permission,
+                'start_block_id': start_block_id
             }
             producer.publish(
                 message,
@@ -90,4 +94,29 @@ def send_message_access_update(self, block_uuid, user_ids):
             )
     except Exception as e:
         print(f'Error sending: {e}')
+        self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
+def set_block_permissions_task(self, initiator_id, target_user_id, block_id, new_permission):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                recursive_set_block_access_query,
+                {
+                    'target_user_id': target_user_id,
+                    'start_block_id': block_id,
+                    'initiator_id': initiator_id,
+                    'new_permission': new_permission
+                }
+            )
+            changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
+            send_message_access_update.delay(
+                block_uuids=changed_block_ids,
+                user_id=target_user_id,
+                permission=new_permission,
+                start_block_id=block_id
+            )
+    except Exception as e:
+        print(f"Error in set_block_permissions_task: {e}")
         self.retry(exc=e, countdown=5)

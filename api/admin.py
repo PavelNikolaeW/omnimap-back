@@ -1,54 +1,115 @@
+from audioop import reverse
+
 from django.contrib import admin
-from .models import Block
-from django import forms
-from simple_history.admin import SimpleHistoryAdmin
+from django.urls import path
+from django.shortcuts import render
+from .models import Block, BlockPermission, BlockLink
+from django.utils.html import format_html
+from django.contrib import messages
+
+# Если вы используете autocomplete_fields, убедитесь, что нужные модели имеют соответствующие настройки поиска.
+# Например, для модели User:
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
+# @admin.register(User)
+# class UserAdmin(admin.ModelAdmin):
+#     search_fields = ('username', 'email')
 
 
-class ChildIDFilter(admin.SimpleListFilter):
-    title = 'Фильтр по UUID дочернего блока'
-    parameter_name = 'child_id'
-    template = 'admin/filters/child_id_filter.html'
-
-    def lookups(self, request, model_admin):
-        # Возвращаем фиктивную опцию, чтобы фильтр отобразился.
-        return [('all', 'Все')]
-
-    def queryset(self, request, queryset):
-        if self.value() and self.value() != 'all':
-            return queryset.filter(children__id=self.value())
-        return queryset
+class BlockPermissionInline(admin.TabularInline):
+    """
+    Inline-класс для отображения и редактирования BlockPermission внутри BlockAdmin.
+    """
+    model = BlockPermission
+    extra = 1  # Количество дополнительных пустых форм для добавления
+    autocomplete_fields = ['user']
+    fields = ('user', 'permission')
 
 
-class BlockAdminForm(forms.ModelForm):
-    class Meta:
-        model = Block
-        fields = '__all__'
+@admin.register(Block)
+class BlockAdmin(admin.ModelAdmin):
+    """
+    Админ-класс для модели Block, включающий Inline для управления BlockPermission.
+    """
+    list_display = ('id', 'title', 'parent', 'creator', 'updated_at')
+    search_fields = ('title', 'id', 'parent__id', 'creator__username')
+    list_filter = ('creator', 'updated_at')
+    inlines = [BlockPermissionInline]
+    readonly_fields = ('id_with_copy_button', 'updated_at', 'parent_link', 'children_links')  # Добавляем поле parent_link в readonly_fields
+
+    def id_with_copy_button(self, obj):
+        """
+        Отображает ID блока с кнопкой для копирования.
+        """
+        return format_html(
+            '<span id="block-id">{}</span> '
+            '<button type="button" onclick="navigator.clipboard.writeText(\'{}\')">Копировать</button>',
+            obj.id,
+            obj.id
+        )
+
+    id_with_copy_button.short_description = "ID с кнопкой копирования"
+
+    def parent_link(self, obj):
+        """
+        Возвращает ссылку на родительский блок, если он существует.
+        """
+        if obj.parent:
+            # url = reverse('admin:api_block_change', args=[obj.parent.id])
+            return format_html('<a href="{}">{}</a>',f'http://localhost:8000/admin/api/block/{obj.parent.id}', obj.parent.title)
+        return "Нет родителя"
+
+    def children_links(self, obj):
+        """
+        Возвращает ссылки на дочерние блоки, если они существуют.
+        """
+        if obj.children.exists():
+            links = [
+                format_html(
+                    '<a href="{}">{}</a>',
+                    f'http://localhost:8000/admin/api/block/{child.id}',
+                    child.title
+                )
+                for child in obj.children.all()
+            ]
+            return format_html('<br>'.join(links))
+        return "Нет дочерних блоков"
 
 
-class BlockAdmin(SimpleHistoryAdmin):
-    list_display = ('id', 'title', 'creator', 'updated_at', 'access_type', 'title')
-    list_filter = ('access_type', 'creator', 'title', ChildIDFilter)
-    search_fields = ('creator__username', 'access_type')
-    filter_horizontal = ('visible_to_users', 'editable_by_users', 'children')
-    raw_id_fields = ('creator',)
-    ordering = ('id',)
-    history_list_display = ['changed_by', 'history_date']  # Отображение в истории
-    search_fields = ['data']  # Возможность поиска по полям
-
-    fieldsets = (
-        ('title', {'fields': ('title',)}),
-        (None, {
-            'fields': ('creator', 'access_type', 'data',)
-        }),
-        ('Permissions', {
-            'fields': ('visible_to_users', 'editable_by_users')
-        }),
-        ('Hierarchy', {
-            'fields': ('children',)
-        }),
-    )
+    parent_link.short_description = "Ссылка на родительский блок"
+    children_links.short_description = "Ссылки на дочерние блоки"
 
 
-admin.site.register(Block, BlockAdmin)
+@admin.register(BlockPermission)
+class BlockPermissionAdmin(admin.ModelAdmin):
+    """
+    Отдельный админ-класс для модели BlockPermission.
+    Позволяет управлять правами доступа отдельно от блоков.
+    """
+    list_display = ('block', 'user', 'permission')
+    list_filter = ('permission', 'block__title')
+    search_fields = ('block__title', 'user__username')
+    autocomplete_fields = ['block', 'user']
+    # Можно добавить readonly_fields или другие настройки по необходимости
 
-# admin.site.register(Block, BlockAdmin)
+    # Если вы хотите предотвратить дублирование записей через админку,
+    # можно переопределить метод save_model
+    def save_model(self, request, obj, form, change):
+        if not change:
+            # Проверяем уникальность комбинации (block, user, permission)
+            if BlockPermission.objects.filter(
+                block=obj.block,
+                user=obj.user,
+                permission=obj.permission
+            ).exists():
+                self.message_user(request, "Такая комбинация (блок, пользователь, разрешение) уже существует.", level=messages.ERROR)
+                return
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(BlockLink)
+class BlockLinkAdmin(admin.ModelAdmin):
+    list_display = ('source', 'target', 'created_at')
+    search_fields = ('source__title', 'target__title')

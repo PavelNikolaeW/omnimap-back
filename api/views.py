@@ -1,8 +1,10 @@
 import json
 import logging
+import uuid
+from collections import defaultdict
 from pprint import pprint
+from tkinter.tix import Tree
 
-import uuid6
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.db.models import Q
@@ -15,24 +17,38 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.pagination import PageNumberPagination
-
+from rest_framework.decorators import api_view, permission_classes
+from django.utils.timezone import now
 from django.conf import settings
-from .models import Block, ACCESS_TYPE_CHOICES
+from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES
 from .serializers import (RegisterSerializer,
-                          CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block)
-from api.utils.query import get_blocks_query, is_descendant_query
-from .tasks import send_message_block_update, send_message_subscribe_user, send_message_access_update
+                          CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
+                          load_empty_block_serializer, access_serializer)
+from api.utils.query import get_all_trees_query, \
+    load_empty_blocks_query, delete_tree_query
+from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task
+from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
+from celery.result import AsyncResult
 
 User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
-FORBIDDEN_BLOCK = {'id': '',
-                   'title': 'block 403 forbidden',
-                   'children': [],
-                   'updated_at': '2000-01-01T00:00:01.000001Z',
-                   'can_be_edited_by_others': True,
-                   'data': {'color': [0, 100, 100, 0], 'childOrder': []}}
+
+class TaskStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, task_id):
+        """
+        Получает статус задачи Celery по task_id.
+        """
+        task_result = AsyncResult(task_id)
+        response_data = {
+            'task_id': task_id,
+            'status': task_result.status,
+            'result': task_result.result if task_result.status == 'SUCCESS' else None,
+        }
+        return Response(response_data)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -80,9 +96,11 @@ class RegisterView(APIView):
             new_block = Block.objects.create(
                 creator=user,
                 title=user.username,
-                data={'color': 'default_color'}
+                data={"color": "default_color"}
             )
+            block_p = BlockPermission.objects.create(user=user, block=new_block, permission='delete')
             new_block.save()
+            block_p.save()
             refresh = RefreshToken.for_user(user)
             return Response({
                 'refresh': str(refresh),
@@ -90,394 +108,493 @@ class RegisterView(APIView):
                 'message': 'User created successfully with tokens',
                 'user_id': user.id,
                 'block_id': new_block.id
-
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AccessBlockView(APIView):
+    permission_classes = (IsAuthenticated,)
 
     def get(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            block = get_object_or_404(Block, id=block_id)
-            access_type = block.access_type
-            visible_to_users = [u.username for u in block.visible_to_users.all() if u.id != user.id]
-            editable_by_users = [u.username for u in block.editable_by_users.all() if u.id != user.id]
-            return Response({'access_type': access_type, 'visible_to_users': visible_to_users,
-                             'editable_by_users': editable_by_users}, status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        block_permissions = BlockPermission.objects.filter(block__id=block_id).select_related('user')
+        if not block_permissions.exists():
+            return Response({'error': 'Block does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(access_serializer(block_permissions))
 
     def post(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            block = get_object_or_404(Block, id=block_id)
-            if not user == block.creator:
-                return Response({}, status=status.HTTP_403_FORBIDDEN)
-            access_type = request.data.get('access_type')
-            visible_for = request.data.get('visible_for')
-            editable_for = request.data.get('editable_for')
-            if access_type:
-                if not any(access_type == t[0] for t in ACCESS_TYPE_CHOICES):
-                    return Response({'message': 'Wrong access type'}, status=status.HTTP_400_BAD_REQUEST)
-                block.access_type = access_type
-                block.save()
-            if visible_for:
-                visible_for_user = get_object_or_404(User, username=visible_for)
-                block.visible_to_users.add(visible_for_user)
-            if editable_for:
-                editable_for_user = get_object_or_404(User, username=editable_for)
-                block.editable_by_users.add(editable_for_user)
-            send_message_access_update.delay(block_id, [u.id for u in block.visible_to_users.all()])
-            return Response({
-                'access_type': block.access_type,
-                'visible_to_users': [u.username for u in block.visible_to_users.all() if u.id != user.id],
-                'editable_by_users': [u.username for u in block.editable_by_users.all() if u.id != user.id]
-            }, status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        initiator = request.user
+        permission_type = request.data.get('permission_type')
+        target_username = request.data.get('target_username')
 
-    def delete(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            block = get_object_or_404(Block, id=block_id)
-            if not user == block.creator:
-                return Response({}, status=status.HTTP_403_FORBIDDEN)
-            remove_vis = request.data.get('remove_vision_for')
-            remove_edit = request.data.get('remove_edit_for')
+        if not permission_type and not target_username:
+            return Response(
+                {"detail": "Please provide target_username and permission_type in request data."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-            if remove_vis:
-                visible_for_user = get_object_or_404(User, username=remove_vis)
-                block.visible_to_users.remove(visible_for_user)
+        valid_permissions = [choice[0] for choice in PERMISSION_CHOICES]
+        if permission_type not in valid_permissions:
+            return Response(
+                {"detail": f"Invalid permission '{permission_type}'. "
+                           f"Must be one of: {valid_permissions}."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-            if remove_edit:
-                editable_for_user = get_object_or_404(User, username=remove_edit)
-                block.editable_by_users.remove(editable_for_user)
-            send_message_access_update.delay(block_id, [u.id for u in block.visible_to_users.all()])
-            return Response({
-                'access_type': block.access_type,
-                'visible_to_users': [u.username for u in block.visible_to_users.all() if u.id != user.id],
-                'editable_by_users': [u.username for u in block.editable_by_users.all() if u.id != user.id]
-            }, status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        block = get_object_or_404(Block, id=block_id)
+        target_user = get_object_or_404(User, username=target_username)
+
+        if not BlockPermission.objects.filter(block=block, user=initiator, permission__in=('edit_ac', 'delete')).first():
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        task = set_block_permissions_task.delay(
+            initiator_id=initiator.id,
+            target_user_id=target_user.id,
+            block_id=str(block.id),
+            new_permission=permission_type
+        )
+
+        return Response(
+            {"task_id": task.id, "detail": "Permission update task has been started."},
+            status=status.HTTP_202_ACCEPTED
+        )
 
 
-class RootBlockView(APIView):
-    def get(self, request):
-        user = request.user
-        if user.is_authenticated:
-            block_id = user.blocks.first().id
-            data, blocks_to_subscribe = get_flat_map_blocks(user.id, [block_id])
-            data['root'] = data[block_id]
-            if len(blocks_to_subscribe) > 0:
-                send_message_subscribe_user.delay(blocks_to_subscribe, user.id)
-            return Response(data, status=status.HTTP_200_OK)
-
-        main_page_user = User.objects.get(username='main_page')
-        main_page_block = main_page_user.blocks.first()
-        data, _ = get_flat_map_blocks(main_page_user.id, [main_page_block.id])
-        data['root'] = data[main_page_block.id]
-        return Response(data, status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
+# todo сделать показ дефолтной страницы для анонимов для root_block_view, load_links, load_empty_blocks
 
 
-class LoadEmptyView(APIView):
-    def post(self, request):
-        user = request.user
-        block_ids = request.data.get('block_ids', [])
-        print(block_ids)
-        if not block_ids:
-            return Response({"error": "No block_ids provided"}, status=status.HTTP_400_BAD_REQUEST)
+@api_view(["GET"])
+@determine_user_id
+@subscribe_to_blocks(send_message_subscribe_user)
+def load_tress(request, user_id):
+    """
+    Возвращает все корневые блоки (parent IS NULL) для текущего пользователя
+    и все их потомки, но суммарно ограничивает кол-во строк LIMIT.
+    Формат ответа:
+    {
+      "<root_uuid>": {
+        "<block_uuid>": {
+          "id": "<block_uuid>",
+          "title": "...",
+          "data": {...},
+          "updated_at": "2024-12-28T17:00:00.123456Z",
+          "children": ["<child_block_uuid1>", "<child_block_uuid2>", ...]
+        },
+        ...
+      },
+      "<root_uuid2>": { ... },
+      ...
+    }
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(get_all_trees_query, {"user_id": user_id, 'creator_id': user_id})
+        rows = cursor.fetchall()
 
-        accessible_blocks = []
-        blocks_403 = {}
-        for block_id in block_ids:
-            block = get_object_or_404(Block, id=block_id)
-
-            if block.access_type in ('public', 'public_ed') or block.visible_to_users.filter(id=user.id).exists():
-                accessible_blocks.append(block_id)
-            else:
-                FORBIDDEN_BLOCK['id'] = block_id
-                blocks_403[block_id] = FORBIDDEN_BLOCK.copy()
-
-        data, blocks_to_subscribe = get_flat_map_blocks(user.id, accessible_blocks)
-        data.update(blocks_403)
-        if len(blocks_to_subscribe) > 0:
-            send_message_subscribe_user.delay(blocks_to_subscribe, user.id)
-        return Response(data, status=status.HTTP_200_OK)
-
-
-class MoveBlockView(APIView):
-
-    @transaction.atomic
-    def post(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            child = get_object_or_404(Block, id=block_id)
-            if user == child.creator or child.editable_by_users.filter(
-                    id=user.id).exists() or child.access_type == 'public_ed':
-
-                new_parent_id = request.data.get('new_parent_id')
-                old_parent_id = request.data.get('old_parent_id')
-                child_order = request.data.get('childOrder')
-
-                if new_parent_id == old_parent_id:
-                    parent = get_object_or_404(Block, id=new_parent_id)
-                    parent.set_child_order(child_order)
-                    res = [get_object_for_block(parent)]
-                else:
-                    old_parent = get_object_or_404(Block, id=old_parent_id)
-                    old_parent.children.remove(child)
-
-                    new_parent = get_object_or_404(Block, id=new_parent_id)
-                    new_parent.children.add(child)
-                    new_parent.set_child_order(child_order)
-                    res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
-                return Response(res, status=status.HTTP_200_OK)
-
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+    if not rows:
+        return Response({"detail": "No blocks found for this user."}, status=404)
+    return Response(get_forest_serializer(rows))
 
 
-class CreateLinkBlockView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        user = request.user
+@api_view(['POST'])
+@determine_user_id
+@subscribe_to_blocks(send_message_subscribe_user)
+def load_empty_blocks(request, user_id):
+    """
+    Эндпоинт для получения доступных блоков.
+    Тело запроса должно содержать JSON с ключом 'block_ids', например:
+    {
+        "block_ids": ["uuid1", "uuid2", ...]
+    }
+    Возвращает JSON с плоским словарём блоков, на которые у пользователя есть право (view/edit).
+    """
 
-        if user.is_authenticated:
-            block_id = request.data.get('dest')
-            ids = request.data.get('src', [])
-            block = get_object_or_404(Block, id=block_id)
-            new_blocks = []
-            if user == block.creator or block.editable_by_users.filter(id=user.id).exists():
-                for id in ids:
-                    new_link = Block.objects.create(creator=user, data={'view': 'link', 'source': id})
-                    new_link.save()
-                    new_blocks.append({
-                        'id': new_link.id,
-                        'data': new_link.data
-                    })
-                    block.children.add(new_link)
+    # Получаем список block_ids из тела запроса
+    block_ids = request.data.get('block_ids', [])
+    if not block_ids:
+        return Response({"detail": "No block_ids specified"}, status=400)
 
-                new_blocks.append(get_object_for_block(block))
-                return Response(new_blocks,
-                                status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+    # Проверяем и преобразуем block_ids в UUID
+    try:
+        block_ids = [uuid.UUID(bid) for bid in block_ids]
+    except (ValueError, TypeError):
+        return Response({"detail": "Invalid block_id format"}, status=400)
+    with connection.cursor() as cursor:
+        cursor.execute(load_empty_blocks_query, {
+            'user_id': user_id,
+            'block_ids': block_ids,
+            'ALLOWED_PERMISSIONS': ALLOWED_SHOW_PERMISSIONS,
+            'max_depth': settings.MAX_DEPTH_LOAD,
+        })
+        rows = cursor.fetchall()
+    if rows:
+        return Response(load_empty_block_serializer(rows, settings.MAX_DEPTH_LOAD))
+    return Response({"detail": "No blocks found for this user."}, status=404)
 
 
-class NewBlockView(APIView):
-    @transaction.atomic
-    def post(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            parent_block = get_object_or_404(Block, id=block_id)
-            if parent_block.creator == user or parent_block.editable_by_users.filter(id=user.id).exists():
-                new_block = Block.objects.create(
-                    creator=user,
-                    title=request.data.get('title', ''),
-                    data=request.data.get('data', {})
-                )
-                new_block.save()
-                parent_block.children.add(new_block)
-                send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
-
-                return Response([get_object_for_block(new_block, []), get_object_for_block(parent_block)],
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({'parent_id': ['edit_ac', 'edit', 'delete']})
+def create_block(request, parent_id):
+    user = request.user
+    parent_block = get_object_or_404(Block, id=parent_id)
+    data = request.data.get('data', {})
+    if 'childOrder' not in data.keys():
+        data['childOrder'] = []
+    new_block = Block.objects.create(
+        creator_id=user.id,
+        title=request.data.get('title', ""),
+        data=data)
+    parent_permissions = BlockPermission.objects.filter(block=parent_block)
+    print(parent_permissions)
+    with transaction.atomic():
+        new_permissions = [
+            BlockPermission(
+                block=new_block,
+                user=perm.user,
+                permission=perm.permission
+            )
+            for perm in parent_permissions
+        ]
+        BlockPermission.objects.bulk_create(new_permissions)  # Массовое создание разрешений
+    parent_block.add_child(new_block)
+    _ = [send_message_subscribe_user.delay([str(new_block.id)], perm.user.id) for perm in parent_permissions]
+    send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
+    return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({
+    'parent_id': ['edit_ac', 'edit', 'delete'], 'child_id': ['delete',]})
+def delete_child_block(request, parent_id, child_id):
+    parent_block = get_object_or_404(Block, id=parent_id)
+    child_block = get_object_or_404(Block, id=child_id)
+
+    parent_block.remove_child(child_block)
+    BlockLink.objects.filter(target__id=child_id).delete()  # если дочерни блок это ссылка то удаляем запись о ссылке
+    if not BlockLink.objects.filter(source__id=child_id).exists():
+        # если нет ссылок на этот блок то удаляем
+        # todo unsubscribe child
+        child_block.delete()
+    send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
+    return Response(get_object_for_block(parent_block), status=status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({
+    'tree_id': ['delete'], })
+def delete_tree(request, tree_id):
+    block = get_object_or_404(Block, id=tree_id)
+    user_id = request.user.id
+    with connection.cursor() as cursor:
+        cursor.execute(delete_tree_query, {'block_id': tree_id, 'user_id': user_id})
+        rows = cursor.fetchall()
+    parent_block = block.parent
+    parent_data = {}
+    if parent_block:
+        parent_block.remove_child(block)
+        parent_data = get_object_for_block(parent_block)
+        send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
+
+    Block.objects.filter(id__in=[row[0] for row in rows]).delete()
+    return Response({'parent': parent_data}, status=status.HTTP_200_OK)
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({
+    'parent_id': ['edit_ac', 'edit', 'delete'],
+    'source_id': ['view', 'edit_ac', 'edit', 'delete']})
+def create_link_on_block(request, parent_id, source_id):
+    user = request.user
+    parent_block = get_object_or_404(Block, id=parent_id)
+    source_block = get_object_or_404(Block, id=source_id)
+    link = Block.objects.create(
+        creator=user,
+        data={'view': 'link', 'source': str(source_id)})
+    BlockPermission.objects.create(user=user, block=link, permission='delete').save()
+    parent_block.add_child(link)
+    BlockLink.objects.create(target=link, source=source_block).save()
+    send_message_subscribe_user.delay([str(source_block.id)], user.id)
+    send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
+    return Response([
+        get_object_for_block(parent_block),
+        get_object_for_block(source_block),
+        get_object_for_block(link)
+    ], status=201)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({
+    'old_parent_id': ['edit_ac', 'edit', 'delete'],
+    'new_parent_id': ['edit_ac', 'edit', 'delete'],
+    'child_id': ['view', 'edit_ac', 'edit', 'delete']})
+def move_block(request, old_parent_id, new_parent_id, child_id):
+    child = get_object_or_404(Block, id=child_id)
+
+    if 'childOrder' not in request.data:
+        return Response({"detail": "childOrder fields are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    child_order = request.data.get('childOrder')
+    if new_parent_id == old_parent_id:
+        parent = get_object_or_404(Block, id=new_parent_id)
+        parent.set_child_order(child_order)
+        res = [get_object_for_block(parent)]
+        send_message_block_update.delay(parent.id, get_object_for_block(parent))
+    else:
+        old_parent = get_object_or_404(Block, id=old_parent_id)
+        new_parent = get_object_or_404(Block, id=new_parent_id)
+        old_parent.remove_child(child)
+        new_parent.add_child(child)
+        res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
+        send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
+        send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))
+    return Response(res, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({'block_id': ['edit_ac', 'edit', 'delete'], })
+def edit_block(request, block_id):
+    block = get_object_or_404(Block, id=block_id)
+    block.title = request.data.get('title', block.title)
+    data = request.data.get('data', {})
+    data.pop('source', None)
+    block.data.update(data)
+    if block.data.get('customGrid', {}).get('reset'):
+        block.data.pop('customGrid')
+    block.save()
+    send_message_block_update.delay(block.id, get_object_for_block(block))
+    return Response(get_object_for_block(block), status=status.HTTP_200_OK)
 
 
 class CopyBlockView(APIView):
+    """
+    Копируем поддеревья блоков и возвращаем результат в формате:
+    {
+      "<new_block_id>": {
+        "id": <new_block_id>,
+        "data": {...},
+        "updated_at": "...",
+        "title": "...",
+        "children": [<child_id>, ...]
+      },
+      ...
+      "<dest_id>": {
+        "id": "<dest_id>",
+        "data": {...},
+        "updated_at": "...",
+        "title": "...",
+        "children": [...]
+      }
+    }
+    """
+    validate_res = False
 
     def copy_hierarchy(self, user_id, src_ids):
-        # Получаем все блоки для копирования
-        src_map, _ = get_flat_map_blocks(user_id, src_ids)
-        if len(src_map) >= settings.LIMIT_BLOCKS - 1:
-            return {"error": "Limit is exceeded"}, {}
+        """
+        src_ids — список строк (UUID в виде строк).
+        Возвращаем:
+          - copied_data (dict): {<new_uuid_str>: {"id": ..., "title": ..., "children": ...}, ...}
+          - old_to_new (dict): {<old_uuid_str>: <new_uuid_str>, ...}
+        """
 
-        # Если src_map пустой, значит нет доступа или блок не найден
-        if not src_map:
-            return {"error": "Src not found or forbidden"}, {}
+        # 0) Функция для замены старых uuid на новые в данных блока
+        def replace_uuids_in_data(data, mapping):
+            if isinstance(data, dict):
+                return {mapping.get(k, k): replace_uuids_in_data(v, mapping) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [replace_uuids_in_data(item, mapping) for item in data]
+            elif isinstance(data, str):
+                return mapping.get(data, data)
+            return data
 
-        # Генерируем маппинг старый UUID -> новый UUID
-        old_to_new = {old_id: str(uuid6.uuid6()) for old_id in src_map.keys()}
+        # 1) Загрузка нужных блоков
+        with connection.cursor() as cursor:
+            cursor.execute(
+                load_empty_blocks_query,
+                {
+                    'user_id': user_id,
+                    'block_ids': src_ids,
+                    'max_depth': settings.MAX_DEPTH_LOAD,
+                    'max_blocks': settings.LIMIT_BLOCKS
+                }
+            )
+            rows = cursor.fetchall()
 
-        # Функция рекурсивной замены UUID в data
-        def replace_uuids_in_data(value, mapping):
-            if isinstance(value, dict):
-                return {mapping.get(k, k): replace_uuids_in_data(v, mapping) for k, v in value.items()}
-            elif isinstance(value, list):
-                return [replace_uuids_in_data(item, mapping) for item in value]
-            elif isinstance(value, str):
-                return mapping.get(value, value)
-            else:
-                return value
+        if not rows:
+            return {}, {}, {"detail": "Src not found or forbidden"}
+        if len(rows) >= settings.LIMIT_BLOCKS:
+            return {}, {}, {"detail": "Limit is exceeded"}
 
-        # Подготавливаем данные для вставки
+        # 2) Формирование src_map и parent_to_children
+        src_map = {
+            str(row[0]): {
+                'id': str(row[0]),
+                'parent_id': str(row[1]) if row[1] else None,
+                'creator_id': user_id,
+                'title': row[2],
+                'data': json.loads(row[3]),
+                'updated_at': row[4],
+            }
+            for row in rows
+        }
+
+        parent_to_children = defaultdict(list)
+        for block in src_map.values():
+            parent_id = block['parent_id']
+            if parent_id in src_map:
+                parent_to_children[parent_id].append(block['id'])
+
+        # 3) Генерация маппинга old_to_new UUIDs
+        old_to_new = {str(old_id): str(uuid.uuid4()) for old_id in src_map.keys()}
+
+        # 4) Подготовка данных для вставки и результирующего словаря
         blocks_to_insert = []
-        children_relations = []
+        access_to_insert = []
         copied_data = {}
-
-        for old_id, block_data in src_map.items():
+        for old_id, block in src_map.items():
             new_id = old_to_new[old_id]
+            new_parent = old_to_new.get(block['parent_id'])
 
-            # Заменяем UUID в data
-            new_data = replace_uuids_in_data(block_data['data'], old_to_new)
-
-            # Формируем запись для вставки нового блока
-            # Все скопированные блоки:
-            # - access_type = 'inherited'
-            # - visible_to_users = [user_id]
-            # - editable_by_users = [user_id]
-            # - creator = user_id
+            # Заменяем UUIDs в data
+            new_data = replace_uuids_in_data(block['data'], old_to_new)
 
             blocks_to_insert.append((
                 new_id,
+                new_parent,
                 user_id,
-                'inherited',
-                block_data['updated_at'],
-                json.dumps(new_data),
-                block_data['title']
+                block['title'],
+                json.dumps(new_data, ensure_ascii=False),
+                now()
             ))
-
-            # Добавляем дочерние связи
-            child_ids = []
-            for child_id in block_data['children']:
-                if child_id in old_to_new:
-                    # Ссылка на новый дочерний id
-                    new_child_id = old_to_new[child_id]
-                    child_ids.append(new_child_id)
-                    children_relations.append((new_id, new_child_id))
+            access_to_insert.append((new_id, user_id, 'delete'))
 
             copied_data[new_id] = {
-                'id': new_id,
+                "id": new_id,
                 "data": new_data,
-                'updated_at': block_data['updated_at'],
-                "title": block_data["title"],
-                "children": child_ids
+                "updated_at": block['updated_at'].isoformat(),
+                "title": block['title'],
+                "children": []
             }
 
-        with transaction.atomic():
-            with connection.cursor() as cursor:
-                # Вставляем новые блоки
-                insert_blocks_sql = '''
-                    INSERT INTO api_block (id, creator_id, access_type, updated_at, data, title)
-                    VALUES %s
-                '''
-                # blocks_to_insert – список кортежей (id, creator_id, access_type, data, title)
-                execute_values(cursor, insert_blocks_sql, blocks_to_insert)
+        # 5) Массовая вставка блоков
+        insert_sql = """
+            INSERT INTO api_block (id, parent_id, creator_id, title, data, updated_at)
+            VALUES %s
+        """
+        insert_permission_sql = """
+            INSERT INTO api_blockpermission (block_id, user_id, permission)
+            VALUES %s
+        """
+        with transaction.atomic(), connection.cursor() as cursor:
+            execute_values(cursor, insert_sql, blocks_to_insert)
+            execute_values(cursor, insert_permission_sql, access_to_insert)
 
-                # Вставляем связи parent->child (если они есть)
-                if children_relations:
-                    insert_children_sql = '''
-                        INSERT INTO api_block_children (from_block_id, to_block_id)
-                        VALUES %s
-                    '''
-                    # children_relations – список кортежей (from_block_id, to_block_id)
-                    execute_values(cursor, insert_children_sql, children_relations)
+        # 6) Заполнение "children" для каждого родителя
+        for old_parent, children in parent_to_children.items():
+            new_parent = old_to_new.get(old_parent)
+            if new_parent:
+                copied_data[new_parent]["children"] = [old_to_new[child] for child in children]
 
-                # Вставляем M2M связи для visible_to_users и editable_by_users
-                new_ids = [old_to_new[i] for i in src_map.keys()]
-                if new_ids:
-                    # visible_to_users
-                    insert_visible_sql = '''
-                        INSERT INTO api_block_visible_to_users (block_id, user_id)
-                        VALUES %s
-                    '''
-                    visible_rows = [(block_id, user_id) for block_id in new_ids]
-                    execute_values(cursor, insert_visible_sql, visible_rows)
+        return copied_data, old_to_new, {}
 
-                    # editable_by_users
-                    insert_editable_sql = '''
-                        INSERT INTO api_block_editable_by_users (block_id, user_id)
-                        VALUES %s
-                    '''
-                    editable_rows = [(block_id, user_id) for block_id in new_ids]
-                    execute_values(cursor, insert_editable_sql, editable_rows)
+    def validate_uuid_list(self, uuid_list):
+        """
+        Проверяет, что все элементы в списке являются корректными UUID.
+        Возвращает список UUID объектов или ошибку.
+        """
+        validated_uuids = []
+        invalid_uuids = []
 
-        return copied_data, old_to_new
+        for uid in uuid_list:
+            try:
+                validated_uuids.append(uuid.UUID(uid))
+            except (ValueError, TypeError):
+                invalid_uuids.append(uid)
+
+        if invalid_uuids:
+            return None, {
+                "error": f"Invalid UUIDs: {', '.join(invalid_uuids)}"
+            }
+
+        return validated_uuids, None
+
+    def validation(self, request, block_dest_id, src_ids):
+        if not block_dest_id or not src_ids:
+            self.validate_res = {"detail": "dest and src_ids is required"}, status.HTTP_400_BAD_REQUEST
+
+        if not BlockPermission.objects.filter(
+                block__id=block_dest_id,
+                user=request.user,
+                permission__in=['edit', 'edit_ac', 'delete']
+        ).exists():
+            self.validate_res = {'detail': f'Forbidden {block_dest_id}'}, status.HTTP_403_FORBIDDEN
+        if not all(BlockPermission.objects.filter(block__id=src_id,
+                                                  user=request.user,
+                                                  permission__in=['view', 'edit', 'edit_ac', 'delete']).exists() for src_id in
+                   src_ids):
+            self.validate_res = {'detail': 'Forbidden'}, status.HTTP_403_FORBIDDEN
+        if self.validate_res:
+            return True
+        return False
 
     def post(self, request):
         user = request.user
-        if user.is_authenticated:
-            block_dest_id = request.data.get('dest')
-            ids = request.data.get('src', [])
-            block_dest = get_object_or_404(Block, id=block_dest_id)
-            if user == block_dest.creator or block_dest.editable_by_users.filter(id=user.id).exists():
-                copies, mapped = self.copy_hierarchy(user.id, ids)
+        if not user.is_authenticated:
+            return Response({"detail": "Authentication required"}, status=status.HTTP_403_FORBIDDEN)
 
-                if error_text := copies.get('error'):
-                    return Response({'error': error_text}, status=status.HTTP_400_BAD_REQUEST)
+        block_dest_id = request.data.get('dest')  # строка
+        src_ids = request.data.get('src', [])  # список строк
 
-                block_dest.children.add(*Block.objects.filter(id__in=[mapped[old_id] for old_id in ids]))
-                copies[str(block_dest.id)] = get_object_for_block(block_dest)
-                send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
-                return Response(copies,
-                                status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        block_dest = get_object_or_404(Block, id=block_dest_id)
+        if self.validation(request, block_dest_id, src_ids):
+            return Response(self.validate_res[0], self.validate_res[1])
 
+        validated_src_ids, error = self.validate_uuid_list(src_ids)
+        if error:
+            self.validate_res = error, status.HTTP_400_BAD_REQUEST
 
-class EditBlockView(APIView):
-    @transaction.atomic
-    def post(self, request, block_id):
-        user = request.user
-        if user.is_authenticated:
-            block = get_object_or_404(Block, id=block_id)
-            if user == block.creator or block.editable_by_users.filter(
-                    id=user.id).exists() or block.access_type == 'public_ed':
-                block.title = request.data.get('title', block.title)
-                data = request.data.get('data', block.data)
-                if (block.access_type == 'public' or block.access_type == 'public_ed') and data.get('connections'):
-                    data.pop('connections')
-                block.data.update(data)
-                if block.data.get('customGrid', {}).get('reset'):
-                    block.data.pop('customGrid')
-                block.save()
-                send_message_block_update.delay(block.id, get_object_for_block(block))
-                return Response(get_object_for_block(block), status=status.HTTP_200_OK)
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        copies, mapped, err = self.copy_hierarchy(user.id, validated_src_ids)
+        if err:
+            return Response(err, status=status.HTTP_400_BAD_REQUEST)
 
-    @transaction.atomic
-    def delete(self, request):
-        user = request.user
-        if user.is_authenticated:
-            remove_id = request.data.get('removeId')
-            parent_id = request.data.get('parentId')
+        # Подвешиваем корневые скопированные блоки к block_dest
+        new_root_ids = [mapped[old_id] for old_id in src_ids if old_id in mapped]
 
-            block = get_object_or_404(Block, id=parent_id.split('*')[-1])
-            child = get_object_or_404(Block, id=remove_id)
-            if user == block.creator or block.editable_by_users.filter(id=user.id).exists():
-                block.children.remove(child)
-                return Response(get_object_for_block(block), status=status.HTTP_200_OK)
-            #     todo отправлять сообщение об обновлвении
-        return Response({}, status=status.HTTP_403_FORBIDDEN)
+        if new_root_ids:
+            block_dest.add_children(Block.objects.filter(id__in=new_root_ids))
+
+        # Обновляем children информации для block_dest
+        existing_children_ids = list(
+            Block.objects.filter(parent=block_dest).values_list('id', flat=True)
+        )
+
+        # Обновляем copied_data с информацией о block_dest
+        copies[str(block_dest.id)] = {
+            "id": str(block_dest.id),
+            "data": block_dest.data,
+            "updated_at": block_dest.updated_at.isoformat(),
+            "title": block_dest.title,
+            "children": [str(child_id) for child_id in existing_children_ids],
+        }
+        send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
+        send_message_subscribe_user.delay(list(copies.keys()), user.id)
+        return Response(copies, status=status.HTTP_200_OK)
 
 
-def get_flat_map_blocks(user_id, block_ids):
+def get_flat_map(user_id, block_ids):
+    block_ids = [uuid.UUID(bid) for bid in block_ids]
+
     with connection.cursor() as cursor:
-        cursor.execute(get_blocks_query, {'user_id': user_id, 'block_ids': block_ids})
-        columns = [col[0] for col in cursor.description]
-        json_fields = ['data']  # Поля, ожидаемые как JSON
-
-        result = {}
-        blocks_to_subscribe = []
-        for row in cursor.fetchall():
-            row_dict = dict(zip(columns, row))
-
-            # Преобразование строк, содержащих JSON, в объекты Python
-            for field in json_fields:
-                try:
-                    row_dict[field] = json.loads(row_dict[field])
-                except json.JSONDecodeError:
-                    print(f"Error decoding JSON for {field} in row {row[0]}")
-            if row_dict['can_be_edited_by_others']:
-                blocks_to_subscribe.append(row_dict['id'])
-            # Собираем результат, используя id блока в качестве ключа
-            if row[0] in result:
-                result[row[0]]['children'].extend(row_dict['children'])
-                result[row[0]]['children'] = list(set(result[row[0]]['children']))  # Убираем дубликаты
-            else:
-                result[row[0]] = row_dict
-        return result, blocks_to_subscribe
-
-def is_descendant(parent_idchild_id, descendant_id):
-    with connection.cursor() as cursor:
-        cursor.execute(is_descendant_query, [child_id, parent_id, child_id])
-        result = cursor.fetchone()
-    return result[0]
+        cursor.execute(load_empty_blocks_query, {
+            'user_id': user_id,
+            'block_ids': block_ids,
+            'max_blocks': settings.LIMIT_BLOCKS
+        })
+        rows = cursor.fetchall()
+    if rows:
+        return load_empty_block_serializer(rows)

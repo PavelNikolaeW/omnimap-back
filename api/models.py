@@ -1,116 +1,113 @@
 from pprint import pprint
 
-import uuid6
+import uuid
 from django.contrib.auth import get_user_model
-from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from simple_history.models import HistoricalRecords
 from api.utils.calc_custom_grid import custom_grid_update
 
-ACCESS_TYPE_CHOICES = (('private', 'Private'),
-                       ('public', 'Public'),
-                       ('inherited', 'Inherited'),
-                       ('public_ed', 'Public Editable'))
-
 User = get_user_model()
-class UUIDModel(models.Model):
-    id = models.CharField(
-        primary_key=True,
-        default=uuid6.uuid6,
-        editable=False,
-        max_length=36,
-    )
 
-    class Meta:
-        abstract = True
+PERMISSION_CHOICES = [
+        ('view', 'View'),
+        ('edit', 'Edit'),
+        ('deny', 'Deny'),
+        ('edit_ac', 'Edit access'),
+        ('delete', 'Delete block')
+    ]
+ALLOWED_SHOW_PERMISSIONS = ['view', 'edit', 'edit_ac', 'delete']
+CHANGE_PERMISSION_CHOICES = ['edit_ac', 'delete']
 
-
-class Block(UUIDModel):
-    creator = models.ForeignKey('auth.User', related_name='blocks', on_delete=models.CASCADE)
-
-    access_type = models.CharField(max_length=10, choices=ACCESS_TYPE_CHOICES, default='inherited')
-    visible_to_users = models.ManyToManyField('auth.User', related_name='visible_blocks', blank=True)
-    editable_by_users = models.ManyToManyField('auth.User', related_name='editable_blocks', blank=True)
-    children = models.ManyToManyField('self', symmetrical=False, related_name='parent_blocks', blank=True)
-
-    data = models.JSONField(blank=True, null=True, default=dict)
+class Block(models.Model):
+    """
+    Блок (узел дерева), хранящийся в структуре Adjacency List.
+    У каждого блока есть uuid в качестве первичного ключа.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    parent = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='children')
+    creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='blocks')
     title = models.CharField(max_length=255, blank=True, null=True)
+    data = models.JSONField(blank=True, null=True, default=dict)
     updated_at = models.DateTimeField(auto_now=True)
 
     history = HistoricalRecords()
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['parent']),
+            models.Index(fields=['id']),
+        ]
+
     def __str__(self):
-        return self.title
+        return f"{self.title or 'Block'} ({self.id})"
 
-    def update_child_order_on_add(self, child_id):
-        child_order = self.data.get('childOrder', [])
-        if child_id not in child_order:
-            child_order.append(child_id)
-            self.data['childOrder'] = child_order
+    def add_child(self, child):
+        self.children.add(child)
+        self.data.setdefault('childOrder', []).append(str(child.id))
         if custom_grid := self.data.get('customGrid'):
-            custom_grid_update(custom_grid, child_id)
-        self.save(update_fields=['data'])
+            custom_grid_update(custom_grid, str(child.id))
+        self.save()
 
-    def update_child_order_on_remove(self, child_id):
-        child_order = self.data.get('childOrder', [])
-        if child_id in child_order:
-            child_order.remove(child_id)
-            self.data['childOrder'] = child_order
-        if custom_grid := self.data.get('customGrid', {}).get('childrenPositions'):
-            pprint(custom_grid)
-            custom_grid.pop(child_id, None)
-        self.save(update_fields=['data'])
+    def add_children(self, children):
+        for child in children:
+            self.add_child(child)
+
+    def remove_child(self, child):
+        if child.id in list(self.children.values_list('id', flat=True)):
+            self.children.remove(child)
+            self.data['childOrder'].remove(str(child.id))
+            if children_positions := self.data.get('customGrid', {}).get('childrenPositions', {}):
+                if children_positions.pop(str(child.id), None):
+                    self.data['customGrid']['childrenPositions'] = children_positions
+            self.save(update_fields=['data'])
 
     def set_child_order(self, new_order):
         """
         Устанавливает новый порядок дочерних блоков.
         :param new_order: Список ID блоков в новом порядке.
         """
-        current_children_ids = list(self.children.values_list('id', flat=True))
+        current_children_ids = [str(uuid) for uuid in list(self.children.values_list('id', flat=True))]
         if set(new_order) != set(current_children_ids):
             raise ValueError("Новый порядок должен содержать все текущие дочерние блоки и только их.")
         self.data['childOrder'] = new_order
         self.save(update_fields=['data'])
-        self.call_custom_grid_update()
-
-    def call_custom_grid_update(self):
-        """
-        Вызывает функцию custom_grid_update, если в data присутствует customGrid.
-        Обновляет поле customGrid в data после вызова функции.
-        """
-        if self.data.get('customGrid'):
-            custom_grid = self.data['customGrid']
-            children = list(self.children.values_list('id', flat=True))
-            for child in children:
-                custom_grid_update(custom_grid, child)
-            self.save(update_fields=['data'])
-
-    def save(self, *args, **kwargs):
-        is_new = self._state.adding
-        if is_new:
-            # Инициализация childOrder при создании нового блока
-            self.data['childOrder'] = []
-
-        # Сохраняем блок, чтобы получить ID
-        super().save(*args, **kwargs)
-
-        if is_new:
-            # Устанавливаем видимость и редактируемость для создателя
-            self.visible_to_users.add(self.creator)
-            self.editable_by_users.add(self.creator)
-
-        # Если title не передан или пустой, устанавливаем его в значение ID блока
-        if not self.title:
-            self.title = str(self.id)
-
-            # Обновляем поле data с флагом title_visible
-            self.data['titleIsVisible'] = False
-            # Снова сохраняем блок, так как могли изменить title и data
-            super().save()
 
 
-class CustomJSONEncoder(DjangoJSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, uuid6.UUID):
-            return str(obj)
-        return super().default(obj)
+class BlockPermission(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name='permissions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='block_permissions')
+    permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+
+    class Meta:
+        # Запрещаем дублировать одну и ту же запись вида:
+        unique_together = ('block', 'user',)
+
+    def __str__(self):
+        return f"{self.block} | {self.user} => {self.permission}"
+
+
+class BlockLink(models.Model):
+    """
+    Модель для хранения ссылок между блоками.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source = models.ForeignKey(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='outgoing_links'
+    )
+    target = models.ForeignKey(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='incoming_links'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('source', 'target')
+        verbose_name = 'Ссылка блока'
+        verbose_name_plural = 'Ссылки блоков'
+
+    def __str__(self):
+        return f"{self.source} → {self.target}"

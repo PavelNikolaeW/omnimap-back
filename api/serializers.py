@@ -1,3 +1,7 @@
+import json
+from collections import defaultdict
+from pprint import pprint
+
 from rest_framework import serializers, status
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.models import User
@@ -7,6 +11,11 @@ from .models import (
     Block,
 )
 
+FORBIDDEN_BLOCK = {'id': '',
+                   'title': 'block 403 forbidden',
+                   'children': [],
+                   'updated_at': '2000-01-01T00:00:01.000001Z',
+                   'data': {'color': [0, 100, 100, 0], 'childOrder': []}}
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
@@ -76,3 +85,98 @@ def get_object_for_block(block, children=None):
         'updated_at': block.updated_at,
         'children': children if isinstance(children, (list, str)) else [str(child.id) for child in block.children.all()]
     }
+
+
+def get_forest_serializer(rows):
+    result = defaultdict(dict)
+    loaded_children_counts = defaultdict(int)
+    total_children_counts = {}
+
+    # Собираем данные о блоках и их детях
+    for (root_id, block_id, parent_id, title, data, updated_at, total_children) in rows:
+        root_id_str = str(root_id)
+        block_id_str = str(block_id)
+        parent_id_str = str(parent_id) if parent_id else None
+
+        # Сохраняем общее количество детей для блока
+        if total_children is not None:
+            total_children_counts[block_id_str] = total_children
+
+        # Инициализируем структуру для корня, если необходимо
+        if root_id_str not in result:
+            result[root_id_str] = {}
+
+        # Создаём запись для текущего блока, если её ещё нет
+        if block_id_str not in result[root_id_str]:
+            result[root_id_str][block_id_str] = {
+                "id": block_id_str,
+                "title": title,
+                "data": json.loads(data or '{}'),
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "children": []
+            }
+
+        # Добавляем текущий блок как ребёнка родителя
+        if parent_id_str:
+            if parent_id_str not in result[root_id_str]:
+                # Создаём заготовку для родителя, если её ещё нет
+                result[root_id_str][parent_id_str] = {
+                    "id": parent_id_str,
+                    "title": None,
+                    "data": {},
+                    "is_edit": True,
+                    "updated_at": None,
+                    "children": []
+                }
+            result[root_id_str][parent_id_str]["children"].append(block_id_str)
+            loaded_children_counts[parent_id_str] += 1
+
+    # Теперь исключаем блоки, у которых не все дети загружены
+    final_result = {}
+    for root_id, blocks in result.items():
+        final_blocks = {}
+        for block_id, block_data in blocks.items():
+            total_children = total_children_counts.get(block_id, 0)
+            loaded_children = loaded_children_counts.get(block_id, 0)
+            if total_children > loaded_children:
+                # У блока не все дети загружены, исключаем его
+                continue
+            final_blocks[block_id] = block_data
+        if final_blocks:
+            final_result[root_id] = final_blocks
+
+    return final_result
+
+
+def load_empty_block_serializer(rows, max_depth):
+    blocks = {}
+    children_map = defaultdict(list)  # parent_id_str -> list of child_id_str
+
+    for (block_id, parent_id, title, data, updated_at, depth, permission) in rows:
+        block_id_str = str(block_id)
+        parent_id_str = str(parent_id) if parent_id else None
+
+        if depth < max_depth:  # отрезаем последний ряд блоков, что бы в ответ попали блоки с полной информацией
+            blocks[block_id_str] = {
+                "id": block_id_str,
+                "title": title,
+                "data": json.loads(data or {}),
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "children": []
+            } if permission != 'deny' else {**FORBIDDEN_BLOCK, 'id': block_id_str}
+
+        if parent_id_str:
+            children_map[parent_id_str].append(block_id_str)
+    # Заполняем поле 'children' для каждого блока
+    for parent_id, child_ids in children_map.items():
+        if parent_id in blocks:
+            blocks[parent_id]["children"].extend(child_ids)
+    return blocks
+
+
+def access_serializer(block_permissions):
+    return [{'user_id': perm.user.id,
+             'username': perm.user.username,
+             'email': perm.user.email,
+             'permission': perm.permission
+             } for perm in block_permissions]
