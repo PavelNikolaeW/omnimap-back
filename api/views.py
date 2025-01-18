@@ -20,7 +20,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import api_view, permission_classes
 from django.utils.timezone import now
 from django.conf import settings
-from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES
+from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, BlockUrlLinkModel
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
                           load_empty_block_serializer, access_serializer)
@@ -143,7 +143,8 @@ class AccessBlockView(APIView):
         block = get_object_or_404(Block, id=block_id)
         target_user = get_object_or_404(User, username=target_username)
 
-        if not BlockPermission.objects.filter(block=block, user=initiator, permission__in=('edit_ac', 'delete')).first():
+        if not BlockPermission.objects.filter(block=block, user=initiator,
+                                              permission__in=('edit_ac', 'delete')).first():
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         task = set_block_permissions_task.delay(
@@ -244,7 +245,6 @@ def create_block(request, parent_id):
         title=request.data.get('title', ""),
         data=data)
     parent_permissions = BlockPermission.objects.filter(block=parent_block)
-    print(parent_permissions)
     with transaction.atomic():
         new_permissions = [
             BlockPermission(
@@ -265,7 +265,7 @@ def create_block(request, parent_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 @check_block_permissions({
-    'parent_id': ['edit_ac', 'edit', 'delete'], 'child_id': ['delete',]})
+    'parent_id': ['edit_ac', 'edit', 'delete'], 'child_id': ['delete', ]})
 def delete_child_block(request, parent_id, child_id):
     parent_block = get_object_or_404(Block, id=parent_id)
     child_block = get_object_or_404(Block, id=child_id)
@@ -282,8 +282,7 @@ def delete_child_block(request, parent_id, child_id):
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
-@check_block_permissions({
-    'tree_id': ['delete'], })
+@check_block_permissions({'tree_id': ['delete'], })
 def delete_tree(request, tree_id):
     block = get_object_or_404(Block, id=tree_id)
     user_id = request.user.id
@@ -299,6 +298,51 @@ def delete_tree(request, tree_id):
 
     Block.objects.filter(id__in=[row[0] for row in rows]).delete()
     return Response({'parent': parent_data}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({'block_id': ['delete'], })
+def create_url(request, block_id):
+    block = get_object_or_404(Block, id=block_id)
+    slug = request.data.get('slug')
+    link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
+    print(block.data)
+    text = block.data.setdefault('text', '') + "<br>" +  request.build_absolute_uri(link.get_absolute_url())
+    block.data['text'] = text
+    block.save(update_fields=['data'])
+    send_message_block_update.delay(str(block.id), get_object_for_block(block))
+    return Response(get_object_for_block(block), status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def block_url(request, slug):
+    link = get_object_or_404(BlockUrlLinkModel, slug=slug)
+    source = link.source
+    query = """
+        WITH RECURSIVE descendants AS (
+            SELECT * FROM api_block WHERE id = %s
+            UNION ALL
+            SELECT b.* FROM api_block b
+            INNER JOIN descendants d ON b.parent_id = d.id
+        )
+        SELECT * FROM descendants;
+        """
+    with connection.cursor() as cursor:
+        # Выполняем SQL-запрос
+        cursor.execute(query, [str(source.id)])
+        # Получаем имена колонок
+        columns = [col[0] for col in cursor.description]
+        # Преобразуем результаты в список словарей
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    blocks_by_id = {str(block['id']): block for block in rows}
+
+    for block in blocks_by_id.values():
+        block['children'] = [
+            str(child['id']) for child in rows if child['parent_id'] == block['id']
+        ]
+    return Response(blocks_by_id, status=status.HTTP_200_OK)
 
 
 
@@ -535,7 +579,8 @@ class CopyBlockView(APIView):
             self.validate_res = {'detail': f'Forbidden {block_dest_id}'}, status.HTTP_403_FORBIDDEN
         if not all(BlockPermission.objects.filter(block__id=src_id,
                                                   user=request.user,
-                                                  permission__in=['view', 'edit', 'edit_ac', 'delete']).exists() for src_id in
+                                                  permission__in=['view', 'edit', 'edit_ac', 'delete']).exists() for
+                   src_id in
                    src_ids):
             self.validate_res = {'detail': 'Forbidden'}, status.HTTP_403_FORBIDDEN
         if self.validate_res:

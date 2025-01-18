@@ -1,6 +1,9 @@
 from django.urls import path
-from .views import RegisterView, delete_tree, load_tress, create_block, delete_child_block, create_link_on_block, \
-    CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block, TaskStatusView
+from .views import (RegisterView, delete_tree, load_tress, create_block, delete_child_block, create_link_on_block, \
+                    CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
+                    create_url, block_url, \
+ \
+                    TaskStatusView)
 
 app_name = 'api'
 
@@ -8,6 +11,9 @@ urlpatterns = [
     path('load-trees/', load_tress, name='root-block'),
     path('load-empty/', load_empty_blocks, name='load-empty'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
+
+    path('create-url/<uuid:block_id>/', create_url, name='create-url'),
+    path('block/<slug:slug>/', block_url, name='block-url'),
 
     path('access/<uuid:block_id>/', AccessBlockView.as_view(), name='access-list'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),

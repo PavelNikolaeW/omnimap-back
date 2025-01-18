@@ -5,18 +5,20 @@ from django.contrib.auth import get_user_model
 from django.db import models
 from simple_history.models import HistoricalRecords
 from api.utils.calc_custom_grid import custom_grid_update
+from django.utils.text import slugify
 
 User = get_user_model()
 
 PERMISSION_CHOICES = [
-        ('view', 'View'),
-        ('edit', 'Edit'),
-        ('deny', 'Deny'),
-        ('edit_ac', 'Edit access'),
-        ('delete', 'Delete block')
-    ]
+    ('view', 'View'),
+    ('edit', 'Edit'),
+    ('deny', 'Deny'),
+    ('edit_ac', 'Edit access'),
+    ('delete', 'Delete block')
+]
 ALLOWED_SHOW_PERMISSIONS = ['view', 'edit', 'edit_ac', 'delete']
 CHANGE_PERMISSION_CHOICES = ['edit_ac', 'delete']
+
 
 class Block(models.Model):
     """
@@ -111,3 +113,45 @@ class BlockLink(models.Model):
 
     def __str__(self):
         return f"{self.source} → {self.target}"
+
+
+class BlockUrlLinkModel(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source = models.ForeignKey(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='url_links',
+        verbose_name='Блок',
+    )
+    creator = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='url_links',
+        verbose_name='Создатель ссылки',
+    )
+    slug = models.SlugField(
+        max_length=255,
+        unique=True,
+        blank=True,
+        verbose_name='Слаг (ЧПУ)',
+        help_text="Уникальная часть URL-адреса для ссылки",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Ссылка на блок'
+        verbose_name_plural = 'Ссылки на блоки'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Ссылка на блок: {self.source.title} (ID: {self.id})"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            # Генерация slug, используя название блока + уникальный идентификатор
+            self.slug = slugify(f"{self.source.title}-{self.id}")
+        super().save(*args, **kwargs)
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+        return reverse('api:block-url', kwargs={'slug': self.slug})
