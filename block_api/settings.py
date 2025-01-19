@@ -30,7 +30,7 @@ MAX_HISTORY = 50
 DEBUG = bool(os.environ.get("DJANGO_DEBUG", default=0))
 # DEBUG = False
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(",")
-
+FRONTEND_HOST = os.environ.get("FRONTEND_HOST", "http://localhost:8080/")
 INTERNAL_IPS = [
     '127.0.0.1',
 ]
@@ -215,7 +215,13 @@ LOGGING = {
 }
 
 LIMIT_BLOCKS = 1000
+# максимальная глубина загрузки блоков за один раз.
+# последний уровень отрезается сериалайзером что бы гарантировать что у блоков на последнем урвоне будут children
 MAX_DEPTH_LOAD = 5
+# максимальная глубины для загрузки блоков по ссылке. (
+# для такой загрузки отключена проверка прав) последний уровень отрежется.
+LINK_LOAD_DEPTH_LIMIT = 10
+
 
 
 RABBITMQ_USER = os.environ.get('RABBITMQ_USER')

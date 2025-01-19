@@ -17,6 +17,7 @@ FORBIDDEN_BLOCK = {'id': '',
                    'updated_at': '2000-01-01T00:00:01.000001Z',
                    'data': {'color': [0, 100, 100, 0], 'childOrder': []}}
 
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -174,9 +175,60 @@ def load_empty_block_serializer(rows, max_depth):
     return blocks
 
 
+def links_serializer(links):
+    return [{'creator': link.creator,
+             'source': link.source,
+             'slug': link.slug,
+             'id': str(link.id)
+             } for link in links]
+
+
 def access_serializer(block_permissions):
     return [{'user_id': perm.user.id,
              'username': perm.user.username,
              'email': perm.user.email,
              'permission': perm.permission
              } for perm in block_permissions]
+
+
+def block_link_serializer(rows, max_depth):
+    blocks_by_id = {}
+    parent_map = {}
+
+    for row in rows:
+        block_id = str(row['id'])
+        parent_id = str(row['parent_id']) if row['parent_id'] else None
+
+        # Парсим данные и формируем блок
+        block = {
+            'id': row['id'],
+            'title': row['title'],
+            'data': json.loads(row['data']),
+            'updated_at': row['updated_at'],
+            'children': [],
+            'depth': row['depth']
+        }
+        blocks_by_id[block_id] = block
+
+        if parent_id:
+            parent_map.setdefault(parent_id, []).append(block_id)
+
+    # Связь блоков через parent_map
+    for parent_id, children_ids in parent_map.items():
+        if parent_id in blocks_by_id:
+            blocks_by_id[parent_id]['children'] = children_ids
+
+    # Фильтруем блоки по глубине
+    filtered_blocks = {
+        block_id: {
+            'id': block['id'],
+            'title': block['title'],
+            'data': block['data'],
+            'updated_at': block['updated_at'],
+            'children': block['children']
+        }
+        for block_id, block in blocks_by_id.items()
+        if block['depth'] <= max_depth - 1
+    }
+
+    return filtered_blocks

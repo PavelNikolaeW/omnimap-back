@@ -23,9 +23,9 @@ from django.conf import settings
 from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, BlockUrlLinkModel
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
-                          load_empty_block_serializer, access_serializer)
+                          load_empty_block_serializer, access_serializer, links_serializer, block_link_serializer)
 from api.utils.query import get_all_trees_query, \
-    load_empty_blocks_query, delete_tree_query
+    load_empty_blocks_query, delete_tree_query, get_block_for_url
 from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
@@ -307,8 +307,7 @@ def create_url(request, block_id):
     block = get_object_or_404(Block, id=block_id)
     slug = request.data.get('slug')
     link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
-    print(block.data)
-    text = block.data.setdefault('text', '') + "<br>" +  request.build_absolute_uri(link.get_absolute_url())
+    text = block.data.setdefault('text', '') + "<br>" + f"{settings.FRONTEND_HOST}?path/{link.slug}"
     block.data['text'] = text
     block.save(update_fields=['data'])
     send_message_block_update.delay(str(block.id), get_object_for_block(block))
@@ -316,34 +315,34 @@ def create_url(request, block_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated, ])
+@check_block_permissions({'block_id': ALLOWED_SHOW_PERMISSIONS, })
+def get_urls(request, block_id):
+    links = BlockUrlLinkModel.objects.filter(source_id=block_id)
+    return Response(links_serializer(links), status=status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated, ])
+def delete_url(request, link_id):
+    link = get_object_or_404(id=link_id, creator=request.user)
+    link.delete()
+    return Response({'detail': 'Deleted successfully'}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
 def block_url(request, slug):
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
     source = link.source
-    query = """
-        WITH RECURSIVE descendants AS (
-            SELECT * FROM api_block WHERE id = %s
-            UNION ALL
-            SELECT b.* FROM api_block b
-            INNER JOIN descendants d ON b.parent_id = d.id
-        )
-        SELECT * FROM descendants;
-        """
+
     with connection.cursor() as cursor:
-        # Выполняем SQL-запрос
-        cursor.execute(query, [str(source.id)])
-        # Получаем имена колонок
+        cursor.execute(get_block_for_url, {'block_id': str(source.id), 'max_depth': settings.LINK_LOAD_DEPTH_LIMIT})
         columns = [col[0] for col in cursor.description]
-        # Преобразуем результаты в список словарей
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-    blocks_by_id = {str(block['id']): block for block in rows}
-
-    for block in blocks_by_id.values():
-        block['children'] = [
-            str(child['id']) for child in rows if child['parent_id'] == block['id']
-        ]
-    return Response(blocks_by_id, status=status.HTTP_200_OK)
-
+    data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
+    send_message_subscribe_user(list(data.keys()), -1)
+    return Response(data, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

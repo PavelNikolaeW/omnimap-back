@@ -217,3 +217,18 @@ SELECT
 FROM block_hierarchy AS bh
 WHERE bh.permission = 'delete'; -- Возвращаем только блоки, на которые у пользователя есть право
 """
+
+
+get_block_for_url = f"""
+        WITH RECURSIVE descendants AS (
+            SELECT *, 1 AS depth
+            FROM api_block
+            WHERE id = %(block_id)s
+            UNION ALL
+            SELECT b.*, d.depth + 1 AS depth
+            FROM api_block b
+            INNER JOIN descendants d ON b.parent_id = d.id
+            WHERE d.depth < %(max_depth)s
+        )
+        SELECT * FROM descendants;
+    """
