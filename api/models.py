@@ -149,7 +149,7 @@ class BlockUrlLinkModel(models.Model):
     def save(self, *args, **kwargs):
         if not self.slug:
             # Генерация slug, используя название блока + уникальный идентификатор
-            self.slug = slugify(f"{self.source.title}-{self.id}")
+            self.slug = slugify(f"{self.id}")
         super().save(*args, **kwargs)
 
     def get_absolute_url(self):

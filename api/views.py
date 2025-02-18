@@ -2,8 +2,6 @@ import json
 import logging
 import uuid
 from collections import defaultdict
-from pprint import pprint
-from tkinter.tix import Tree
 
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
@@ -306,12 +304,24 @@ def delete_tree(request, tree_id):
 def create_url(request, block_id):
     block = get_object_or_404(Block, id=block_id)
     slug = request.data.get('slug')
-    link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
-    text = block.data.setdefault('text', '') + "<br>" + f"{settings.FRONTEND_HOST}?path/{link.slug}"
-    block.data['text'] = text
-    block.save(update_fields=['data'])
-    send_message_block_update.delay(str(block.id), get_object_for_block(block))
-    return Response(get_object_for_block(block), status=status.HTTP_200_OK)
+    if not BlockUrlLinkModel.objects.filter(slug=slug).exists():
+        link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
+        return Response(links_serializer([link]), status=status.HTTP_200_OK)
+    return Response({'message': 'Create link error, slug exist'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_slug(request, slug):
+    """
+    Проверяет, существует ли URL с таким slug.
+    Если slug занят -> status: unavailable
+    Если slug свободен -> status: available
+    """
+    if BlockUrlLinkModel.objects.filter(slug=slug).exists():
+        return Response({'status': 'unavailable'}, status=status.HTTP_200_OK)
+    return Response({'status': 'available'}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -324,8 +334,10 @@ def get_urls(request, block_id):
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated, ])
-def delete_url(request, link_id):
-    link = get_object_or_404(id=link_id, creator=request.user)
+@check_block_permissions({'block_id': ['delete']})
+def delete_url(request, block_id, slug):
+    link = get_object_or_404(BlockUrlLinkModel, slug=slug)
+    print(link)
     link.delete()
     return Response({'detail': 'Deleted successfully'}, status=status.HTTP_200_OK)
 
@@ -380,7 +392,6 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
 
     if 'childOrder' not in request.data:
         return Response({"detail": "childOrder fields are required"}, status=status.HTTP_400_BAD_REQUEST)
-
     child_order = request.data.get('childOrder')
     if new_parent_id == old_parent_id:
         parent = get_object_or_404(Block, id=new_parent_id)
@@ -392,6 +403,7 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
         new_parent = get_object_or_404(Block, id=new_parent_id)
         old_parent.remove_child(child)
         new_parent.add_child(child)
+        new_parent.set_child_order(child_order)
         res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
         send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
         send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))

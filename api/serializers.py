@@ -176,8 +176,8 @@ def load_empty_block_serializer(rows, max_depth):
 
 
 def links_serializer(links):
-    return [{'creator': link.creator,
-             'source': link.source,
+    return [{'creator': link.creator.username,
+             'source': link.source.id,
              'slug': link.slug,
              'id': str(link.id)
              } for link in links]
