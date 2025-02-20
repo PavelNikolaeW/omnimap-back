@@ -1,8 +1,10 @@
 from django.urls import path
-from .views import (RegisterView, delete_tree, load_tress, create_block, delete_child_block, create_link_on_block,
+from .views import (RegisterView, delete_tree, load_tress, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
-                    create_url, block_url, check_slug,
-                    TaskStatusView, get_urls, delete_url)
+                    TaskStatusView)
+from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
+    GroupMembersView
+from .views_url import create_url, check_slug, get_urls, delete_url, block_url
 
 app_name = 'api'
 
@@ -10,6 +12,11 @@ urlpatterns = [
     path('load-trees/', load_tress, name='root-block'),
     path('load-empty/', load_empty_blocks, name='load-empty'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
+    path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
+    path('create-link-block/<uuid:parent_id>/<uuid:source_id>/', create_link_on_block, name='create-link-block'),
+    path('move-block/<uuid:old_parent_id>/<uuid:new_parent_id>/<uuid:child_id>/', move_block, name='move-block'),
+    path('copy-block/', CopyBlockView.as_view(), name='copy-block'),
+    path('edit-block/<uuid:block_id>/', edit_block, name='edit-block'),
 
     path('create-url/<uuid:block_id>/', create_url, name='create-url'),
     path('check-url/<slug:slug>/', check_slug, name='check-url'),
@@ -18,12 +25,12 @@ urlpatterns = [
     path('block/<slug:slug>/', block_url, name='block-url'),
 
     path('access/<uuid:block_id>/', AccessBlockView.as_view(), name='access-list'),
-    path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
-    path('delete-child/<uuid:parent_id>/<uuid:child_id>/', delete_child_block, name='delete-child'),
-    path('create-link-block/<uuid:parent_id>/<uuid:source_id>/', create_link_on_block, name='create-link-block'),
-    path('move-block/<uuid:old_parent_id>/<uuid:new_parent_id>/<uuid:child_id>/', move_block, name='move-block'),
-    path('copy-block/', CopyBlockView.as_view(), name='copy-block'),
-    path('edit-block/<uuid:block_id>/', edit_block, name='edit-block'),
+    path('groups/', MyGroupsView.as_view(), name='my_groups'),
+    path('groups/<int:group_id>/members/', GroupMembersView.as_view(), name='group_members'),
+    path('groups/create/', GroupCreateView.as_view(), name='create_group'),
+    path('groups/<int:group_id>/delete/', GroupDeleteView.as_view(), name='delete_group'),
+    path('groups/<int:group_id>/add_member/', GroupAddMemberView.as_view(), name='add_member'),
+    path('groups/<int:group_id>/remove_member/<str:username>', GroupRemoveMemberView.as_view(), name='remove_member'),
 
     path('tasks/<str:task_id>/', TaskStatusView.as_view(), name='task_status'),
     path('register/', RegisterView.as_view(), name='register'),

@@ -75,18 +75,45 @@ class Block(models.Model):
         self.save(update_fields=['data'])
 
 
+class Group(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=255)
+    users = models.ManyToManyField(User, related_name='custom_groups')
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='owned_groups'
+    )
+
+    def __str__(self):
+        return f"{self.name} (owner: {self.owner.username})"
+
+
+# Разрешения для отдельного пользователя (оставляем как есть)
 class BlockPermission(models.Model):
     id = models.BigAutoField(primary_key=True)
-    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name='permissions')
+    block = models.ForeignKey('Block', on_delete=models.CASCADE, related_name='permissions')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='block_permissions')
     permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
 
     class Meta:
-        # Запрещаем дублировать одну и ту же запись вида:
         unique_together = ('block', 'user',)
 
     def __str__(self):
         return f"{self.block} | {self.user} => {self.permission}"
+
+
+class BlockGroupPermission(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    block = models.ForeignKey('Block', on_delete=models.CASCADE, related_name='group_permissions')
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='block_permissions')
+    permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+
+    class Meta:
+        unique_together = ('block', 'group',)
+
+    def __str__(self):
+        return f"{self.block} | {self.group} => {self.permission}"
 
 
 class BlockLink(models.Model):

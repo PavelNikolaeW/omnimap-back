@@ -3,21 +3,13 @@ from audioop import reverse
 from django.contrib import admin
 from django.urls import path
 from django.shortcuts import render
-from .models import Block, BlockPermission, BlockLink, BlockUrlLinkModel
+from .models import Block, BlockPermission, BlockLink, BlockUrlLinkModel, Group
 from django.utils.html import format_html
 from django.contrib import messages
 
-# Если вы используете autocomplete_fields, убедитесь, что нужные модели имеют соответствующие настройки поиска.
-# Например, для модели User:
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
-
-
-# @admin.register(User)
-# class UserAdmin(admin.ModelAdmin):
-#     search_fields = ('username', 'email')
-
 
 class BlockPermissionInline(admin.TabularInline):
     """
@@ -126,3 +118,10 @@ class BlockUrlLinkModelAdmin(admin.ModelAdmin):
     list_filter = ('created_at',)
     ordering = ('-created_at',)
     readonly_fields = ('id', 'slug', 'created_at')
+
+
+@admin.register(Group)
+class GroupAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'owner')
+    search_fields = ('name', 'owner__username')
+    filter_horizontal = ('users',)

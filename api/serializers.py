@@ -8,7 +8,7 @@ from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
-    Block,
+    Block, Group,
 )
 
 FORBIDDEN_BLOCK = {'id': '',
@@ -61,6 +61,21 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'email')
+
+
+class GroupSerializer(serializers.ModelSerializer):
+    users = UserSerializer(many=True, read_only=True)
+    owner = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Group
+        fields = ('id', 'name', 'owner', 'users')
+
+
+class GroupCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Group
+        fields = ('name',)
 
 
 class BlockSerializer(serializers.ModelSerializer):

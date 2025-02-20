@@ -18,13 +18,15 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import api_view, permission_classes
 from django.utils.timezone import now
 from django.conf import settings
-from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, BlockUrlLinkModel
+from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, BlockUrlLinkModel, \
+    Group
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
                           load_empty_block_serializer, access_serializer, links_serializer, block_link_serializer)
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query, delete_tree_query, get_block_for_url
-from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task
+from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task, \
+    set_block_group_permissions_task
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
 
@@ -123,37 +125,48 @@ class AccessBlockView(APIView):
         initiator = request.user
         permission_type = request.data.get('permission_type')
         target_username = request.data.get('target_username')
+        group_name = request.data.get('group_name')
 
-        if not permission_type and not target_username:
+        if not permission_type or (not target_username and not group_name):
             return Response(
-                {"detail": "Please provide target_username and permission_type in request data."},
+                {"detail": "Please provide permission_type and either target_username or group_name in request data."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         valid_permissions = [choice[0] for choice in PERMISSION_CHOICES]
         if permission_type not in valid_permissions:
             return Response(
-                {"detail": f"Invalid permission '{permission_type}'. "
-                           f"Must be one of: {valid_permissions}."},
+                {"detail": f"Invalid permission '{permission_type}'. Must be one of: {valid_permissions}."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         block = get_object_or_404(Block, id=block_id)
-        target_user = get_object_or_404(User, username=target_username)
-
+        # Проверка, что инициатор имеет право на изменение стартового блока
         if not BlockPermission.objects.filter(block=block, user=initiator,
-                                              permission__in=('edit_ac', 'delete')).first():
+                                              permission__in=('edit_ac', 'delete')).exists():
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        task = set_block_permissions_task.delay(
-            initiator_id=initiator.id,
-            target_user_id=target_user.id,
-            block_id=str(block.id),
-            new_permission=permission_type
-        )
+        if target_username:
+            target_user = get_object_or_404(User, username=target_username)
+            task = set_block_permissions_task.delay(
+                initiator_id=initiator.id,
+                target_user_id=target_user.id,
+                block_id=str(block.id),
+                new_permission=permission_type
+            )
+            detail_msg = "Permission update task has been started for user."
+        else:
+            group = get_object_or_404(Group, name=group_name, owner=initiator)
+            task = set_block_group_permissions_task.delay(
+                initiator_id=initiator.id,
+                group_id=group.id,
+                block_id=str(block.id),
+                new_permission=permission_type
+            )
+            detail_msg = "Permission update task has been started for group."
 
         return Response(
-            {"task_id": task.id, "detail": "Permission update task has been started."},
+            {"task_id": task.id, "detail": detail_msg},
             status=status.HTTP_202_ACCEPTED
         )
 
@@ -300,65 +313,6 @@ def delete_tree(request, tree_id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-@check_block_permissions({'block_id': ['delete'], })
-def create_url(request, block_id):
-    block = get_object_or_404(Block, id=block_id)
-    slug = request.data.get('slug')
-    if not BlockUrlLinkModel.objects.filter(slug=slug).exists():
-        link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
-        return Response(links_serializer([link]), status=status.HTTP_200_OK)
-    return Response({'message': 'Create link error, slug exist'}, status=status.HTTP_400_BAD_REQUEST)
-
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def check_slug(request, slug):
-    """
-    Проверяет, существует ли URL с таким slug.
-    Если slug занят -> status: unavailable
-    Если slug свободен -> status: available
-    """
-    if BlockUrlLinkModel.objects.filter(slug=slug).exists():
-        return Response({'status': 'unavailable'}, status=status.HTTP_200_OK)
-    return Response({'status': 'available'}, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, ])
-@check_block_permissions({'block_id': ALLOWED_SHOW_PERMISSIONS, })
-def get_urls(request, block_id):
-    links = BlockUrlLinkModel.objects.filter(source_id=block_id)
-    return Response(links_serializer(links), status=status.HTTP_200_OK)
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated, ])
-@check_block_permissions({'block_id': ['delete']})
-def delete_url(request, block_id, slug):
-    link = get_object_or_404(BlockUrlLinkModel, slug=slug)
-    print(link)
-    link.delete()
-    return Response({'detail': 'Deleted successfully'}, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-def block_url(request, slug):
-    link = get_object_or_404(BlockUrlLinkModel, slug=slug)
-    source = link.source
-
-    with connection.cursor() as cursor:
-        cursor.execute(get_block_for_url, {'block_id': str(source.id), 'max_depth': settings.LINK_LOAD_DEPTH_LIMIT})
-        columns = [col[0] for col in cursor.description]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-    data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
-    send_message_subscribe_user(list(data.keys()), -1)
-    return Response(data, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
 @check_block_permissions({
     'parent_id': ['edit_ac', 'edit', 'delete'],
     'source_id': ['view', 'edit_ac', 'edit', 'delete']})
@@ -448,6 +402,7 @@ class CopyBlockView(APIView):
     }
     """
     validate_res = False
+    MAX_DEPTH_COPY = 5
 
     def copy_hierarchy(self, user_id, src_ids):
         """
@@ -474,7 +429,7 @@ class CopyBlockView(APIView):
                 {
                     'user_id': user_id,
                     'block_ids': src_ids,
-                    'max_depth': settings.MAX_DEPTH_LOAD,
+                    'max_depth': self.MAX_DEPTH_COPY,
                     'max_blocks': settings.LIMIT_BLOCKS
                 }
             )
@@ -484,6 +439,8 @@ class CopyBlockView(APIView):
             return {}, {}, {"detail": "Src not found or forbidden"}
         if len(rows) >= settings.LIMIT_BLOCKS:
             return {}, {}, {"detail": "Limit is exceeded"}
+        if rows[-1][-2] <= self.MAX_DEPTH_COPY:
+            return {}, {}, {"detail": "Max depth is exceeded"}
 
         # 2) Формирование src_map и parent_to_children
         src_map = {

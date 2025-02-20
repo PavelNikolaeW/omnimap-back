@@ -148,7 +148,7 @@ FROM block_hierarchy;"""
 
 recursive_set_block_access_query = '''
 WITH RECURSIVE subblocks AS (
-    -- Шаг 1: только если у инициатора есть 'edit_access' на стартовый блок
+    -- Шаг 1: только если у инициатора есть 'edit_ac' или 'delete' на стартовый блок
     SELECT b.id
     FROM api_block b
     JOIN api_blockpermission bp 
@@ -159,7 +159,7 @@ WITH RECURSIVE subblocks AS (
 
     UNION ALL
 
-    -- Шаг 2: рекурсивно спускаемся к потомкам, проверяя 'edit_access' 
+    -- Шаг 2: рекурсивно спускаемся к потомкам, проверяя 'edit_ac' или 'delete'
     SELECT child.id
     FROM api_block child
     JOIN api_blockpermission bp_child
@@ -174,7 +174,44 @@ SELECT s.id AS block_id, %(target_user_id)s AS user_id, %(new_permission)s AS pe
 FROM subblocks s
 ON CONFLICT (block_id, user_id)
 DO UPDATE SET permission = EXCLUDED.permission
-RETURNING block_id;'''
+RETURNING block_id;
+'''
+
+recursive_set_block_group_access_query = '''
+WITH RECURSIVE subblocks AS (
+    SELECT b.id
+    FROM api_block b
+    JOIN api_blockpermission bp 
+      ON b.id = bp.block_id
+    WHERE b.id = %(start_block_id)s
+      AND bp.user_id = %(initiator_id)s
+      AND bp.permission IN ('edit_ac', 'delete')
+
+    UNION ALL
+
+    SELECT child.id
+    FROM api_block child
+    JOIN api_blockpermission bp_child
+      ON child.id = bp_child.block_id
+    JOIN subblocks sb 
+      ON child.parent_id = sb.id
+    WHERE bp_child.user_id = %(initiator_id)s
+      AND bp_child.permission IN ('edit_ac', 'delete')
+),
+group_users AS (
+    SELECT gu.user_id
+    FROM api_group_users gu
+    JOIN api_group g ON gu.group_id = g.id
+    WHERE gu.group_id = %(group_id)s
+      AND gu.user_id <> g.owner_id
+)
+INSERT INTO api_blockpermission (block_id, user_id, permission)
+SELECT s.id, gu.user_id, %(new_permission)s
+FROM subblocks s, group_users gu
+ON CONFLICT (block_id, user_id)
+DO UPDATE SET permission = EXCLUDED.permission
+RETURNING block_id;
+'''
 
 
 delete_tree_query = """WITH RECURSIVE block_hierarchy AS (

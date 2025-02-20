@@ -6,7 +6,7 @@ from django.conf import settings
 import json
 from django.db import connection
 
-from api.utils.query import recursive_set_block_access_query
+from api.utils.query import recursive_set_block_access_query, recursive_set_block_group_access_query
 
 # Настройки RabbitMQ
 RABBITMQ_URL = settings.CELERY_BROKER_URL
@@ -119,4 +119,32 @@ def set_block_permissions_task(self, initiator_id, target_user_id, block_id, new
             )
     except Exception as e:
         print(f"Error in set_block_permissions_task: {e}")
+        self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
+def set_block_group_permissions_task(self, initiator_id, group_id, block_id, new_permission):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                recursive_set_block_group_access_query,
+                {
+                    'group_id': group_id,
+                    'start_block_id': block_id,
+                    'initiator_id': initiator_id,
+                    'new_permission': new_permission
+                }
+            )
+            changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
+            # Если требуется уведомить всех участников группы, можно реализовать рассылку
+            # Например, получить список пользователей группы и отправить уведомление каждому
+            # Здесь для примера просто отправляем уведомление с group_id
+            send_message_access_update.delay(
+                block_uuids=changed_block_ids,
+                user_id=group_id,  # Или можно передать специальное уведомление для группы
+                permission=new_permission,
+                start_block_id=block_id
+            )
+    except Exception as e:
+        print(f"Error in set_block_group_permissions_task: {e}")
         self.retry(exc=e, countdown=5)
