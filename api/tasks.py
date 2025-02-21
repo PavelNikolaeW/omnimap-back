@@ -6,6 +6,7 @@ from django.conf import settings
 import json
 from django.db import connection
 
+from api.models import Group, BlockLink
 from api.utils.query import recursive_set_block_access_query, recursive_set_block_group_access_query
 
 # Настройки RabbitMQ
@@ -73,25 +74,29 @@ def send_message_subscribe_user(self, block_uuids, user_id):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_access_update(self, block_uuids, user_id, permission, start_block_id):
+def send_message_access_update(self, block_uuids, user_id, permission, start_block_id, group_id=0):
 
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)
-            message = {
-                'action': 'update_access',
-                'block_uuids': block_uuids,
-                'user_id': user_id,
-                'permission': permission,
-                'start_block_id': start_block_id
-            }
-            producer.publish(
-                message,
-                exchange=exchange,
-                routing_key=ROUTING_KEY,
-                serializer='json',
-                declare=[exchange]
-            )
+            ids = [user_id]
+            if user_id == 0:
+                ids = Group.objects.filter(id=group_id).values_list('users', flat=True)
+            for user in ids:
+                message = {
+                    'action': 'update_access',
+                    'block_uuids': block_uuids,
+                    'user_id': user,
+                    'permission': permission,
+                    'start_block_id': start_block_id
+                }
+                producer.publish(
+                    message,
+                    exchange=exchange,
+                    routing_key=ROUTING_KEY,
+                    serializer='json',
+                    declare=[exchange]
+                )
     except Exception as e:
         print(f'Error sending: {e}')
         self.retry(exc=e, countdown=5)
@@ -100,23 +105,30 @@ def send_message_access_update(self, block_uuids, user_id, permission, start_blo
 @shared_task(bind=True, max_retries=3)
 def set_block_permissions_task(self, initiator_id, target_user_id, block_id, new_permission):
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                recursive_set_block_access_query,
-                {
-                    'target_user_id': target_user_id,
-                    'start_block_id': block_id,
-                    'initiator_id': initiator_id,
-                    'new_permission': new_permission
-                }
-            )
-            changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
-            send_message_access_update.delay(
-                block_uuids=changed_block_ids,
-                user_id=target_user_id,
-                permission=new_permission,
-                start_block_id=block_id
-            )
+        with (connection.cursor() as cursor):
+            start_block_ids = [block_id]
+            while True:
+                cursor.execute(
+                    recursive_set_block_access_query,
+                    {
+                        'target_user_id': target_user_id,
+                        'start_block_ids': start_block_ids,
+                        'initiator_id': initiator_id,
+                        'new_permission': new_permission
+                    }
+                )
+                changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
+                send_message_access_update.delay(
+                    block_uuids=changed_block_ids,
+                    user_id=target_user_id,
+                    permission=new_permission,
+                    start_block_id=block_id
+                )
+                links = BlockLink.objects.filter(target__id__in=changed_block_ids)
+                start_block_ids = list(links.values_list('source_id', flat=True))
+                if not start_block_ids:
+                    break
+
     except Exception as e:
         print(f"Error in set_block_permissions_task: {e}")
         self.retry(exc=e, countdown=5)
@@ -126,25 +138,30 @@ def set_block_permissions_task(self, initiator_id, target_user_id, block_id, new
 def set_block_group_permissions_task(self, initiator_id, group_id, block_id, new_permission):
     try:
         with connection.cursor() as cursor:
-            cursor.execute(
-                recursive_set_block_group_access_query,
-                {
-                    'group_id': group_id,
-                    'start_block_id': block_id,
-                    'initiator_id': initiator_id,
-                    'new_permission': new_permission
-                }
-            )
-            changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
-            # Если требуется уведомить всех участников группы, можно реализовать рассылку
-            # Например, получить список пользователей группы и отправить уведомление каждому
-            # Здесь для примера просто отправляем уведомление с group_id
-            send_message_access_update.delay(
-                block_uuids=changed_block_ids,
-                user_id=group_id,  # Или можно передать специальное уведомление для группы
-                permission=new_permission,
-                start_block_id=block_id
-            )
+            start_block_ids = [block_id]
+            while True:
+                cursor.execute(
+                    recursive_set_block_group_access_query,
+                    {
+                        'group_id': group_id,
+                        'start_block_ids': start_block_ids,
+                        'initiator_id': initiator_id,
+                        'new_permission': new_permission
+                    }
+                )
+                changed_block_ids = [str(row[0]) for row in cursor.fetchall()]
+                send_message_access_update.delay(
+                    block_uuids=changed_block_ids,
+                    user_id=0,
+                    permission=new_permission,
+                    start_block_id=block_id,
+                    group_id=group_id
+                )
+                links = BlockLink.objects.filter(target__id__in=changed_block_ids)
+                start_block_ids = list(links.values_list('source_id', flat=True))
+                if not start_block_ids:
+                    break
+
     except Exception as e:
         print(f"Error in set_block_group_permissions_task: {e}")
         self.retry(exc=e, countdown=5)

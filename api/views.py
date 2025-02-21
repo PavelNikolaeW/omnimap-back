@@ -402,7 +402,7 @@ class CopyBlockView(APIView):
     }
     """
     validate_res = False
-    MAX_DEPTH_COPY = 5
+    MAX_DEPTH_COPY = 10
 
     def copy_hierarchy(self, user_id, src_ids):
         """
@@ -439,7 +439,7 @@ class CopyBlockView(APIView):
             return {}, {}, {"detail": "Src not found or forbidden"}
         if len(rows) >= settings.LIMIT_BLOCKS:
             return {}, {}, {"detail": "Limit is exceeded"}
-        if rows[-1][-2] <= self.MAX_DEPTH_COPY:
+        if rows[-1][-2] >= self.MAX_DEPTH_COPY:
             return {}, {}, {"detail": "Max depth is exceeded"}
 
         # 2) Формирование src_map и parent_to_children
