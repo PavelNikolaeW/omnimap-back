@@ -141,6 +141,7 @@ class AccessBlockView(APIView):
             )
 
         block = get_object_or_404(Block, id=block_id)
+
         # Проверка, что инициатор имеет право на изменение стартового блока
         if not BlockPermission.objects.filter(block=block, user=initiator,
                                               permission__in=('edit_ac', 'delete')).exists():
@@ -151,8 +152,8 @@ class AccessBlockView(APIView):
             task = set_block_permissions_task.delay(
                 initiator_id=initiator.id,
                 target_user_id=target_user.id,
-                block_id=str(block.id),
-                new_permission=permission_type
+                block_id=block.id,
+                new_permission=permission_type,
             )
             detail_msg = "Permission update task has been started for user."
         else:
@@ -160,8 +161,8 @@ class AccessBlockView(APIView):
             task = set_block_group_permissions_task.delay(
                 initiator_id=initiator.id,
                 group_id=group.id,
-                block_id=str(block.id),
-                new_permission=permission_type
+                block_id=block.id,
+                new_permission=permission_type,
             )
             detail_msg = "Permission update task has been started for group."
 
@@ -169,9 +170,6 @@ class AccessBlockView(APIView):
             {"task_id": task.id, "detail": detail_msg},
             status=status.HTTP_202_ACCEPTED
         )
-
-
-# todo сделать показ дефолтной страницы для анонимов для root_block_view, load_links, load_empty_blocks
 
 
 @api_view(["GET"])
@@ -271,24 +269,6 @@ def create_block(request, parent_id):
     send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
     return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-@check_block_permissions({
-    'parent_id': ['edit_ac', 'edit', 'delete'], 'child_id': ['delete', ]})
-def delete_child_block(request, parent_id, child_id):
-    parent_block = get_object_or_404(Block, id=parent_id)
-    child_block = get_object_or_404(Block, id=child_id)
-
-    parent_block.remove_child(child_block)
-    BlockLink.objects.filter(target__id=child_id).delete()  # если дочерни блок это ссылка то удаляем запись о ссылке
-    if not BlockLink.objects.filter(source__id=child_id).exists():
-        # если нет ссылок на этот блок то удаляем
-        # todo unsubscribe child
-        child_block.delete()
-    send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
-    return Response(get_object_for_block(parent_block), status=status.HTTP_200_OK)
 
 
 @api_view(['DELETE'])
