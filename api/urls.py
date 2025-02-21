@@ -1,5 +1,7 @@
 from django.urls import path
-from .views import (RegisterView, delete_tree, load_tress, create_block, create_link_on_block,
+
+from .view_delete_tree import delete_tree
+from .views import (RegisterView, load_tress, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
                     TaskStatusView)
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \

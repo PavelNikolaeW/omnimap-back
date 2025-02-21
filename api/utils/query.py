@@ -223,7 +223,7 @@ WHERE block_id NOT IN (SELECT unnest(%(start_block_ids)s));
 
 delete_tree_query = """
 WITH RECURSIVE block_hierarchy AS (
-    -- Начальная выборка (ANCHOR)
+    -- Начальная выборка: выбираем стартовый блок и его право
     SELECT
         b.id,
         b.parent_id,
@@ -237,10 +237,10 @@ WITH RECURSIVE block_hierarchy AS (
         AND bp_delete.user_id = %(user_id)s
         AND bp_delete.permission = 'delete'
     WHERE b.id = %(block_id)s
-    
+
     UNION ALL
-    
-    -- Рекурсивная часть (RECURSIVE)
+
+    -- Рекурсивная выборка: собираем все дочерние блоки без ограничения по правам родителя
     SELECT
         c.id,
         c.parent_id,
@@ -255,12 +255,17 @@ WITH RECURSIVE block_hierarchy AS (
         AND bp_delete2.permission = 'delete'
     INNER JOIN block_hierarchy AS bh
         ON c.parent_id = bh.id
-    WHERE bh.permission = 'delete' -- Продолжаем только если у родителя есть право на удаление
+),
+totals AS (
+    SELECT 
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE permission = 'delete') AS deletable
+    FROM block_hierarchy
 )
-SELECT
-    bh.id
-FROM block_hierarchy AS bh
-WHERE bh.permission = 'delete'; -- Возвращаем только блоки, на которые у пользователя есть право
+SELECT bh.id
+FROM block_hierarchy AS bh, totals t
+WHERE t.total = t.deletable
+  AND bh.permission = 'delete';
 """
 
 

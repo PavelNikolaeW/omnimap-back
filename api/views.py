@@ -271,26 +271,6 @@ def create_block(request, parent_id):
                     status=status.HTTP_201_CREATED)
 
 
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-@check_block_permissions({'tree_id': ['delete'], })
-def delete_tree(request, tree_id):
-    block = get_object_or_404(Block, id=tree_id)
-    user_id = request.user.id
-    with connection.cursor() as cursor:
-        cursor.execute(delete_tree_query, {'block_id': tree_id, 'user_id': user_id})
-        rows = cursor.fetchall()
-    parent_block = block.parent
-    parent_data = {}
-    if parent_block:
-        parent_block.remove_child(block)
-        parent_data = get_object_for_block(parent_block)
-        send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
-
-    Block.objects.filter(id__in=[row[0] for row in rows]).delete()
-    return Response({'parent': parent_data}, status=status.HTTP_200_OK)
-
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @check_block_permissions({
