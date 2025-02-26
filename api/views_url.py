@@ -66,5 +66,5 @@ def block_url(request, slug):
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
-    send_message_subscribe_user(list(data.keys()), -1)
+    send_message_subscribe_user(list(data.keys()), [-1])
     return Response(data, status=status.HTTP_200_OK)

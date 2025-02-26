@@ -116,6 +116,7 @@ class AccessBlockView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request, block_id):
+        block = get_object_or_404(Block, pk=block_id)
         block_permissions = BlockPermission.objects.filter(block__id=block_id).select_related('user')
         if not block_permissions.exists():
             return Response({'error': 'Block does not exist'}, status=status.HTTP_404_NOT_FOUND)
@@ -265,8 +266,9 @@ def create_block(request, parent_id):
         ]
         BlockPermission.objects.bulk_create(new_permissions)  # Массовое создание разрешений
     parent_block.add_child(new_block)
-    _ = [send_message_subscribe_user.delay([str(new_block.id)], perm.user.id) for perm in parent_permissions]
+    send_message_subscribe_user.delay([str(new_block.id)], [perm.user.id for perm in parent_permissions])
     send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
+    send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block))
     return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
 
@@ -278,22 +280,59 @@ def create_block(request, parent_id):
     'source_id': ['view', 'edit_ac', 'edit', 'delete']})
 def create_link_on_block(request, parent_id, source_id):
     user = request.user
-    parent_block = get_object_or_404(Block, id=parent_id)
-    source_block = get_object_or_404(Block, id=source_id)
-    link = Block.objects.create(
-        creator=user,
-        data={'view': 'link', 'source': str(source_id)})
-    BlockPermission.objects.create(user=user, block=link, permission='delete').save()
-    parent_block.add_child(link)
-    BlockLink.objects.create(target=link, source=source_block).save()
-    send_message_subscribe_user.delay([str(source_block.id)], user.id)
-    send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
+
+    # Оптимизированный запрос, загружаем все блоки сразу
+    blocks = {b.id: b for b in Block.objects.filter(id__in=[parent_id, source_id])}
+    parent_block = blocks.get(parent_id)
+    source_block = blocks.get(source_id)
+
+    if not parent_block or not source_block:
+        return Response({"error": "Block not found"}, status=404)
+
+    with transaction.atomic():
+        # Создаём новый блок-ссылку
+        link = Block.objects.create(creator=user, data={'view': 'link', 'source': str(source_id)})
+
+        # Создаём связь
+        BlockLink.objects.create(target=link, source=source_block)
+
+        # Загружаем разрешения одним запросом
+        permissions = list(BlockPermission.objects.filter(block=parent_block))
+
+        # Подготовка данных для массового создания разрешений
+        new_permissions = [
+            BlockPermission(user=perm.user, block=link, permission=perm.permission)
+            for perm in permissions
+        ]
+
+        # Проверяем, нет ли дублирования прав в source_block
+        existing_source_perms = set(BlockPermission.objects.filter(block=source_block)
+                                    .values_list('user_id', 'permission'))
+        new_permissions.extend([
+            BlockPermission(user=perm.user, block=source_block, permission=perm.permission)
+            for perm in permissions
+            if (perm.user.id, perm.permission) not in existing_source_perms
+        ])
+
+        # Массовая вставка
+        BlockPermission.objects.bulk_create(new_permissions, ignore_conflicts=True)
+
+        # Отправка сообщений о подписке одним батчем
+        user_ids = {perm.user.id for perm in permissions}
+        send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids))
+
+        # Добавляем новый блок в дерево
+        parent_block.add_child(link)
+
+        # Обновление данных блоков
+        send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
+        send_message_block_update.delay(link.id, get_object_for_block(link))
+
     return Response([
         get_object_for_block(parent_block),
         get_object_for_block(source_block),
         get_object_for_block(link)
     ], status=201)
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -318,6 +357,12 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
         old_parent.remove_child(child)
         new_parent.add_child(child)
         new_parent.set_child_order(child_order)
+        existing_source_perms = list(BlockPermission.objects.filter(block_id=new_parent)
+                                     .values_list('user_id', 'permission'))
+        BlockPermission.objects.bulk_create([
+            BlockPermission(block=child, user_id=user_id, permission=new_perm)
+            for user_id, new_perm in existing_source_perms
+        ], ignore_conflicts=True)
         res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
         send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
         send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))
@@ -362,7 +407,7 @@ class CopyBlockView(APIView):
     }
     """
     validate_res = False
-    MAX_DEPTH_COPY = 10
+    MAX_DEPTH_COPY = 50
 
     def copy_hierarchy(self, user_id, src_ids):
         """
@@ -458,13 +503,8 @@ class CopyBlockView(APIView):
             INSERT INTO api_block (id, parent_id, creator_id, title, data, updated_at)
             VALUES %s
         """
-        insert_permission_sql = """
-            INSERT INTO api_blockpermission (block_id, user_id, permission)
-            VALUES %s
-        """
         with transaction.atomic(), connection.cursor() as cursor:
             execute_values(cursor, insert_sql, blocks_to_insert)
-            execute_values(cursor, insert_permission_sql, access_to_insert)
 
         # 6) Заполнение "children" для каждого родителя
         for old_parent, children in parent_to_children.items():
@@ -535,6 +575,14 @@ class CopyBlockView(APIView):
         if err:
             return Response(err, status=status.HTTP_400_BAD_REQUEST)
 
+        # Устанавливаем права для всех новых блоков
+        existing_source_perms = list(BlockPermission.objects.filter(block_id=block_dest_id)
+                                     .values_list('user_id', 'permission'))
+        BlockPermission.objects.bulk_create([
+            BlockPermission(block_id=new_block_id, user_id=user_id, permission=permission)
+            for new_block_id in mapped.values()
+            for user_id, permission in existing_source_perms
+        ])
         # Подвешиваем корневые скопированные блоки к block_dest
         new_root_ids = [mapped[old_id] for old_id in src_ids if old_id in mapped]
 
@@ -555,7 +603,7 @@ class CopyBlockView(APIView):
             "children": [str(child_id) for child_id in existing_children_ids],
         }
         send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
-        send_message_subscribe_user.delay(list(copies.keys()), user.id)
+        send_message_subscribe_user.delay(list(copies.keys()), [user.id])
         return Response(copies, status=status.HTTP_200_OK)
 
 

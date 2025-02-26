@@ -25,7 +25,7 @@ exchange = Exchange(EXCHANGE_NAME, type='direct')
 def send_message_block_update(self, block_uuid, block_data):
     block_data = {
         'id': str(block_data['id']),
-        'title': block_data['title'],
+        'title': block_data['title'] or '',
         'data': json.dumps(block_data['data']),
         'updated_at': int(datetime.fromisoformat(str(block_data['updated_at'])).timestamp()),
         'children': json.dumps(block_data['children'])
@@ -52,29 +52,44 @@ def send_message_block_update(self, block_uuid, block_data):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_subscribe_user(self, block_uuids, user_id):
+def send_message_subscribe_user(self, block_uuids, user_ids):
+    """
+    Отправляет уведомления о подписке пользователям.
+
+    :param block_uuids: список UUID блоков
+    :param user_ids: список ID пользователей
+    """
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)
-            message = {
-                'action': 'subscribe',
-                'block_uuids': block_uuids,
-                'user_id': user_id
-            }
-            producer.publish(
-                message,
-                exchange=exchange,
-                routing_key=ROUTING_KEY,
-                serializer='json',
-                declare=[exchange]
-            )
+
+            # Подготовка списка сообщений
+            messages = [
+                {
+                    'action': 'subscribe',
+                    'block_uuids': block_uuids,
+                    'user_id': user_id
+                }
+                for user_id in user_ids
+            ]
+
+            # Отправка всех сообщений сразу
+            for message in messages:
+                producer.publish(
+                    message,
+                    exchange=exchange,
+                    routing_key=ROUTING_KEY,
+                    serializer='json',
+                    declare=[exchange]
+                )
+
     except Exception as e:
         print(f'Error sending: {e}')
         self.retry(exc=e, countdown=5)
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_access_update(self, block_uuids, user_id, permission, start_block_id, group_id=0):
+def send_message_access_update(self, block_uuids, user_id, permission, start_block_ids, group_id=0):
 
     try:
         with Connection(RABBITMQ_URL) as conn:
@@ -88,7 +103,7 @@ def send_message_access_update(self, block_uuids, user_id, permission, start_blo
                     'block_uuids': block_uuids,
                     'user_id': user,
                     'permission': permission,
-                    'start_block_id': start_block_id
+                    'start_block_ids': [str(id) for id in start_block_ids]
                 }
                 producer.publish(
                     message,
@@ -122,7 +137,7 @@ def set_block_permissions_task(self, initiator_id, target_user_id, block_id, new
                     block_uuids=changed_block_ids,
                     user_id=target_user_id,
                     permission=new_permission,
-                    start_block_id=block_id
+                    start_block_ids=start_block_ids
                 )
                 links = BlockLink.objects.filter(target__id__in=changed_block_ids)
                 start_block_ids = list(links.values_list('source_id', flat=True))
@@ -154,7 +169,7 @@ def set_block_group_permissions_task(self, initiator_id, group_id, block_id, new
                     block_uuids=changed_block_ids,
                     user_id=0,
                     permission=new_permission,
-                    start_block_id=block_id,
+                    start_block_ids=start_block_ids,
                     group_id=group_id
                 )
                 links = BlockLink.objects.filter(target__id__in=changed_block_ids)
