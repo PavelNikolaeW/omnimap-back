@@ -53,7 +53,7 @@ class BlockAdmin(admin.ModelAdmin):
         if obj.parent:
             # url = reverse('admin:api_block_change', args=[obj.parent.id])
             return format_html('<a href="{}">{}</a>', f'http://localhost:8000/admin/api/block/{obj.parent.id}',
-                               obj.parent.title)
+                               obj.parent.title or 'nonTitle')
         return "Нет родителя"
 
     def children_links(self, obj):
@@ -65,7 +65,7 @@ class BlockAdmin(admin.ModelAdmin):
                 format_html(
                     '<a href="{}">{}</a>',
                     f'http://localhost:8000/admin/api/block/{child.id}',
-                    child.title
+                    child.title or 'nonTitle'
                 )
                 for child in obj.children.all()
             ]

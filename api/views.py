@@ -299,27 +299,21 @@ def create_link_on_block(request, parent_id, source_id):
         # Загружаем разрешения одним запросом
         permissions = list(BlockPermission.objects.filter(block=parent_block))
 
-        # Подготовка данных для массового создания разрешений
-        new_permissions = [
+        BlockPermission.objects.bulk_create([
             BlockPermission(user=perm.user, block=link, permission=perm.permission)
             for perm in permissions
-        ]
-
-        # Проверяем, нет ли дублирования прав в source_block
-        existing_source_perms = set(BlockPermission.objects.filter(block=source_block)
-                                    .values_list('user_id', 'permission'))
-        new_permissions.extend([
-            BlockPermission(user=perm.user, block=source_block, permission=perm.permission)
-            for perm in permissions
-            if (perm.user.id, perm.permission) not in existing_source_perms
-        ])
-
-        # Массовая вставка
-        BlockPermission.objects.bulk_create(new_permissions, ignore_conflicts=True)
+        ], ignore_conflicts=True)
 
         # Отправка сообщений о подписке одним батчем
         user_ids = {perm.user.id for perm in permissions}
         send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids))
+
+        _ = [set_block_permissions_task.delay(
+            initiator_id=user.id,
+            target_user_id=perm.user.id,
+            block_id=source_block.id,
+            new_permission=perm.permission,
+        ) for perm in permissions]
 
         # Добавляем новый блок в дерево
         parent_block.add_child(link)
@@ -359,10 +353,13 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
         new_parent.set_child_order(child_order)
         existing_source_perms = list(BlockPermission.objects.filter(block_id=new_parent)
                                      .values_list('user_id', 'permission'))
-        BlockPermission.objects.bulk_create([
-            BlockPermission(block=child, user_id=user_id, permission=new_perm)
-            for user_id, new_perm in existing_source_perms
-        ], ignore_conflicts=True)
+        _ = [set_block_permissions_task.delay(
+            initiator_id=request.user.id,
+            target_user_id=user_id,
+            block_id=child.id,
+            new_permission=permission,
+        ) for user_id, permission in existing_source_perms]
+
         res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
         send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
         send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))
@@ -575,33 +572,40 @@ class CopyBlockView(APIView):
         if err:
             return Response(err, status=status.HTTP_400_BAD_REQUEST)
 
-        # Устанавливаем права для всех новых блоков
-        existing_source_perms = list(BlockPermission.objects.filter(block_id=block_dest_id)
-                                     .values_list('user_id', 'permission'))
-        BlockPermission.objects.bulk_create([
-            BlockPermission(block_id=new_block_id, user_id=user_id, permission=permission)
-            for new_block_id in mapped.values()
-            for user_id, permission in existing_source_perms
-        ])
-        # Подвешиваем корневые скопированные блоки к block_dest
-        new_root_ids = [mapped[old_id] for old_id in src_ids if old_id in mapped]
+        # Оборачиваем операции записи в транзакцию
+        with transaction.atomic():
+            # Получаем права для block_dest и устанавливаем их для новых блоков
+            existing_source_perms = list(
+                BlockPermission.objects.filter(block_id=block_dest_id)
+                .values_list('user_id', 'permission')
+            )
+            new_permissions = [
+                BlockPermission(block_id=new_block_id, user_id=user_id, permission=permission)
+                for new_block_id in mapped.values()
+                for user_id, permission in existing_source_perms
+            ]
+            BlockPermission.objects.bulk_create(new_permissions)
 
-        if new_root_ids:
-            block_dest.add_children(Block.objects.filter(id__in=new_root_ids))
+            # Связываем скопированные корневые блоки с block_dest
+            new_root_ids = [mapped[old_id] for old_id in src_ids if old_id in mapped]
+            if new_root_ids:
+                block_dest.add_children(Block.objects.filter(id__in=new_root_ids))
 
-        # Обновляем children информации для block_dest
-        existing_children_ids = list(
-            Block.objects.filter(parent=block_dest).values_list('id', flat=True)
-        )
+            # Обновляем список дочерних блоков block_dest
+            existing_children_ids = list(
+                Block.objects.filter(parent=block_dest).values_list('id', flat=True)
+            )
 
-        # Обновляем copied_data с информацией о block_dest
-        copies[str(block_dest.id)] = {
-            "id": str(block_dest.id),
-            "data": block_dest.data,
-            "updated_at": block_dest.updated_at.isoformat(),
-            "title": block_dest.title,
-            "children": [str(child_id) for child_id in existing_children_ids],
-        }
+            # Обновляем данные копий с информацией о block_dest
+            copies[str(block_dest.id)] = {
+                "id": str(block_dest.id),
+                "data": block_dest.data,
+                "updated_at": block_dest.updated_at.isoformat(),
+                "title": block_dest.title,
+                "children": [str(child_id) for child_id in existing_children_ids],
+            }
+
+        # Асинхронная отправка сообщений об обновлении блоков
         send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
         send_message_subscribe_user.delay(list(copies.keys()), [user.id])
         return Response(copies, status=status.HTTP_200_OK)

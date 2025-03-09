@@ -69,8 +69,7 @@ SELECT
     COALESCE(child_counts.total_children, 0) AS total_children
 FROM cte
 LEFT JOIN child_counts 
-    ON cte.id = child_counts.parent_id
-LIMIT {settings.LIMIT_BLOCKS};
+    ON cte.id = child_counts.parent_id;
 """
 
 load_empty_blocks_query = f"""

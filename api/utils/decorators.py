@@ -23,7 +23,6 @@ def subscribe_to_blocks(decorator_task):
                     data = [block['id'] for block in response.data]
                 else:
                     data = list(str(block_id) for block_id, block in response.data.items() if block['updated_at'] != '2000-01-01T00:00:01.000001Z')
-                print(data)
                 decorator_task.delay(data, [user_id])
             return response
         return wrapper

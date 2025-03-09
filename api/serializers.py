@@ -102,67 +102,61 @@ def get_object_for_block(block, children=None):
         'children': children if isinstance(children, (list, str)) else [str(child.id) for child in block.children.all()]
     }
 
-
 def get_forest_serializer(rows):
-    result = defaultdict(dict)
-    loaded_children_counts = defaultdict(int)
-    total_children_counts = {}
+    # blocks_by_root: для каждого root_id храним словарь блоков, которые явно загружены (есть строка с данными)
+    blocks_by_root = defaultdict(dict)
+    # children_mapping: для каждого root_id для каждого parent_id накапливаем список дочерних block_id
+    children_mapping = defaultdict(lambda: defaultdict(list))
+    # expected_children: для блоков, для которых задано поле total_children
+    expected_children = {}
+    # Кэш для ускорения разбора JSON
+    json_cache = {}
 
-    # Собираем данные о блоках и их детях
-    for (root_id, block_id, parent_id, title, data, updated_at, total_children) in rows:
-        root_id_str = str(root_id)
-        block_id_str = str(block_id)
-        parent_id_str = str(parent_id) if parent_id else None
+    def parse_json(s):
+        if s not in json_cache:
+            json_cache[s] = json.loads(s or '{}')
+        return json_cache[s]
 
-        # Сохраняем общее количество детей для блока
+    # Единый проход по строкам
+    for root_id, block_id, parent_id, title, data, updated_at, total_children in rows:
+        r = str(root_id)
+        b = str(block_id)
+        p = str(parent_id) if parent_id else None
+
+        # Сохраняем данные блока только если есть явная строка (то есть, мы загружаем корректные поля)
+        blocks_by_root[r][b] = {
+            "id": b,
+            "title": title,
+            "data": parse_json(data),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "children": []  # список детей заполнится ниже
+        }
         if total_children is not None:
-            total_children_counts[block_id_str] = total_children
+            expected_children[b] = total_children
 
-        # Инициализируем структуру для корня, если необходимо
-        if root_id_str not in result:
-            result[root_id_str] = {}
+        # Если есть родитель, запоминаем связь
+        if p:
+            children_mapping[r][p].append(b)
 
-        # Создаём запись для текущего блока, если её ещё нет
-        if block_id_str not in result[root_id_str]:
-            result[root_id_str][block_id_str] = {
-                "id": block_id_str,
-                "title": title,
-                "data": json.loads(data or '{}'),
-                "updated_at": updated_at.isoformat() if updated_at else None,
-                "children": []
-            }
+    # Для каждого блока, если его данные явно загружены (есть row), добавляем список детей из children_mapping
+    for r, parent_children in children_mapping.items():
+        for parent_id, child_ids in parent_children.items():
+            if parent_id in blocks_by_root[r]:
+                blocks_by_root[r][parent_id]["children"] = child_ids
 
-        # Добавляем текущий блок как ребёнка родителя
-        if parent_id_str:
-            if parent_id_str not in result[root_id_str]:
-                # Создаём заготовку для родителя, если её ещё нет
-                result[root_id_str][parent_id_str] = {
-                    "id": parent_id_str,
-                    "title": None,
-                    "data": {},
-                    "is_edit": True,
-                    "updated_at": None,
-                    "children": []
-                }
-            result[root_id_str][parent_id_str]["children"].append(block_id_str)
-            loaded_children_counts[parent_id_str] += 1
-
-    # Теперь исключаем блоки, у которых не все дети загружены
-    final_result = {}
-    for root_id, blocks in result.items():
-        final_blocks = {}
-        for block_id, block_data in blocks.items():
-            total_children = total_children_counts.get(block_id, 0)
-            loaded_children = loaded_children_counts.get(block_id, 0)
-            if total_children > loaded_children:
-                # У блока не все дети загружены, исключаем его
-                continue
-            final_blocks[block_id] = block_data
-        if final_blocks:
-            final_result[root_id] = final_blocks
-
-    return final_result
-
+    # Фильтруем блоки: возвращаем блок только если число его дочерних блоков равно ожидаемому
+    # Если для блока не задано expected_children, считаем, что он "полный"
+    result = {}
+    for r, blocks in blocks_by_root.items():
+        filtered = {}
+        for b, block in blocks.items():
+            exp = expected_children.get(b, len(block["children"]))
+            if len(block["children"]) < exp and b != r:
+                continue  # пропускаем блок, если не все дочерние загружены
+            filtered[b] = block
+        if filtered:
+            result[r] = filtered
+    return result
 
 def load_empty_block_serializer(rows, max_depth):
     blocks = {}
