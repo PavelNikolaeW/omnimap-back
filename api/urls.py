@@ -3,9 +3,10 @@ from django.urls import path
 from .view_delete_tree import delete_tree
 from .views import (RegisterView, load_tress, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
-                    TaskStatusView)
+                    TaskStatusView, create_new_tree)
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
     GroupMembersView
+from .views_history import BlockHistoryListView, BlockHistoryUndoView
 from .views_url import create_url, check_slug, get_urls, delete_url, block_url
 
 app_name = 'api'
@@ -15,6 +16,7 @@ urlpatterns = [
     path('load-empty/', load_empty_blocks, name='load-empty'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
+    path('new-tree/', create_new_tree, name='new-tree'),
     path('create-link-block/<uuid:parent_id>/<uuid:source_id>/', create_link_on_block, name='create-link-block'),
     path('move-block/<uuid:old_parent_id>/<uuid:new_parent_id>/<uuid:child_id>/', move_block, name='move-block'),
     path('copy-block/', CopyBlockView.as_view(), name='copy-block'),
@@ -36,5 +38,8 @@ urlpatterns = [
 
     path('tasks/<str:task_id>/', TaskStatusView.as_view(), name='task_status'),
     path('register/', RegisterView.as_view(), name='register'),
-    path('search-block/', BlockSearchAPIView.as_view(), name='search-block')
+    path('search-block/', BlockSearchAPIView.as_view(), name='search-block'),
+
+    path('blocks/<uuid:block_id>/history/', BlockHistoryListView.as_view(), name='block-history-list'),
+    path('undo/', BlockHistoryUndoView.as_view(), name='block-history-undo'),
 ]

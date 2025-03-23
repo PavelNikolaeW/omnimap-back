@@ -275,13 +275,26 @@ def create_block(request, parent_id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def create_new_tree(request):
+    title = request.data.get('title', "")
+    user = request.user
+    block = Block.objects.create(creator=user, title=title, data={})
+    BlockPermission(
+        block=block,
+        user=user,
+        permission='delete'
+    ).save()
+    return Response(get_object_for_block(block), status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 @check_block_permissions({
     'parent_id': ['edit_ac', 'edit', 'delete'],
     'source_id': ['view', 'edit_ac', 'edit', 'delete']})
 def create_link_on_block(request, parent_id, source_id):
     user = request.user
 
-    # Оптимизированный запрос, загружаем все блоки сразу
     blocks = {b.id: b for b in Block.objects.filter(id__in=[parent_id, source_id])}
     parent_block = blocks.get(parent_id)
     source_block = blocks.get(source_id)
@@ -297,15 +310,15 @@ def create_link_on_block(request, parent_id, source_id):
         BlockLink.objects.create(target=link, source=source_block)
 
         # Загружаем разрешения одним запросом
-        permissions = list(BlockPermission.objects.filter(block=parent_block))
+        parent_rem = list(BlockPermission.objects.filter(block=parent_block))
 
         BlockPermission.objects.bulk_create([
             BlockPermission(user=perm.user, block=link, permission=perm.permission)
-            for perm in permissions
+            for perm in parent_rem
         ], ignore_conflicts=True)
 
         # Отправка сообщений о подписке одним батчем
-        user_ids = {perm.user.id for perm in permissions}
+        user_ids = {perm.user.id for perm in parent_rem}
         send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids))
 
         _ = [set_block_permissions_task.delay(
@@ -313,12 +326,11 @@ def create_link_on_block(request, parent_id, source_id):
             target_user_id=perm.user.id,
             block_id=source_block.id,
             new_permission=perm.permission,
-        ) for perm in permissions]
+        ) for perm in parent_rem]
 
         # Добавляем новый блок в дерево
         parent_block.add_child(link)
 
-        # Обновление данных блоков
         send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
         send_message_block_update.delay(link.id, get_object_for_block(link))
 
@@ -327,6 +339,7 @@ def create_link_on_block(request, parent_id, source_id):
         get_object_for_block(source_block),
         get_object_for_block(link)
     ], status=201)
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -490,6 +503,7 @@ class CopyBlockView(APIView):
             copied_data[new_id] = {
                 "id": new_id,
                 "data": new_data,
+                "parent_id": new_parent,
                 "updated_at": block['updated_at'].isoformat(),
                 "title": block['title'],
                 "children": []
@@ -600,10 +614,12 @@ class CopyBlockView(APIView):
             copies[str(block_dest.id)] = {
                 "id": str(block_dest.id),
                 "data": block_dest.data,
+                "parent_id": str(block_dest.parent.id) if block_dest.parent else None,
                 "updated_at": block_dest.updated_at.isoformat(),
                 "title": block_dest.title,
                 "children": [str(child_id) for child_id in existing_children_ids],
             }
+            [copies[block_id].update({'parent_id': str(block_dest.id)}) for block_id in new_root_ids]
 
         # Асинхронная отправка сообщений об обновлении блоков
         send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))

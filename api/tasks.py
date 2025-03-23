@@ -27,6 +27,7 @@ def send_message_block_update(self, block_uuid, block_data):
         'id': str(block_data['id']),
         'title': block_data['title'] or '',
         'data': json.dumps(block_data['data']),
+        'parent_id': block_data['parent_id'],
         'updated_at': int(datetime.fromisoformat(str(block_data['updated_at'])).timestamp()),
         'children': json.dumps(block_data['children'])
     }

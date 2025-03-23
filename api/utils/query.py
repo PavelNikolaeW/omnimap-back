@@ -281,3 +281,178 @@ get_block_for_url = f"""
         )
         SELECT * FROM descendants;
     """
+
+restore_deleted_branch = f"""
+WITH RECURSIVE cte AS (
+  ----------------------------------------------------------------------------
+  -- 1) Рекурсивный CTE: находим все блоки, которые нужно восстановить
+  ----------------------------------------------------------------------------
+  SELECT anchor.id,
+         anchor.parent_id,
+         anchor.data,
+         anchor.title,
+         anchor.creator_id,
+         anchor.updated_at
+    FROM (
+      SELECT hb.id,
+             hb.parent_id,
+             hb.data,
+             hb.title,
+             hb.creator_id,
+             hb.updated_at
+        FROM api_historicalblock hb
+       WHERE hb.id = %(block_id)s
+         AND hb.history_type = '-'
+       ORDER BY hb.history_date DESC
+       LIMIT 1
+    ) AS anchor
+
+  UNION ALL
+
+  SELECT child.id,
+         child.parent_id,
+         child.data,
+         child.title,
+         child.creator_id,
+         child.updated_at
+    FROM cte
+    JOIN LATERAL (
+      SELECT (json_array_elements_text((cte.data->'childOrder')::json))::uuid AS child_id
+    ) AS j ON true
+    JOIN LATERAL (
+      SELECT hb2.id,
+             hb2.parent_id,
+             hb2.data,
+             hb2.title,
+             hb2.creator_id,
+             hb2.updated_at
+        FROM api_historicalblock hb2
+       WHERE hb2.id = j.child_id
+         AND hb2.history_type = '-'
+       ORDER BY hb2.history_date DESC
+       LIMIT 1
+    ) AS child ON true
+),
+-------------------------------------------------------------------------------
+-- 2) Вставляем (или обновляем) блоки в api_block и возвращаем их id
+-------------------------------------------------------------------------------
+upserted AS (
+  INSERT INTO api_block (id, parent_id, data, title, creator_id, updated_at)
+  SELECT c.id,
+         c.parent_id,
+         c.data,
+         c.title,
+         c.creator_id,
+         c.updated_at
+    FROM cte c
+  ON CONFLICT (id) DO UPDATE
+     SET parent_id  = EXCLUDED.parent_id,
+         data       = EXCLUDED.data,
+         title      = EXCLUDED.title,
+         creator_id = EXCLUDED.creator_id,
+         updated_at = EXCLUDED.updated_at
+  RETURNING id
+),
+-------------------------------------------------------------------------------
+-- 3) Проставляем права для каждого восстановленного блока,
+--    взяв те же права, что у родительского блока (parent_id).
+-------------------------------------------------------------------------------
+inserted_perms AS (
+  INSERT INTO api_blockpermission (block_id, user_id, permission)
+  SELECT upserted.id, bp.user_id, bp.permission
+    FROM upserted
+    -- Здесь подставляете ваш parent_id, который есть во внешнем Python-коде
+    CROSS JOIN api_blockpermission bp
+   WHERE bp.block_id = %(parent_block_id)s
+
+  -- на случай если какие-то права уже существуют
+  ON CONFLICT DO NOTHING
+  RETURNING block_id, user_id, permission
+)
+
+SELECT block_id, user_id, permission
+  FROM inserted_perms
+;
+"""
+
+# нужно собрать данные блоков и скопировать их
+roll_bsck_branch = f'''
+WITH RECURSIVE cte AS (
+
+  -- 1) "Anchor": ищем историческую запись корневого блока
+  --   максимально близкую к дате `:rollback_date`, но не позже её
+  SELECT anchor.id,
+         anchor.parent_id,
+         anchor.data,
+         anchor.title,
+         anchor.creator_id,
+         anchor.updated_at
+    FROM (
+      SELECT hb.id,
+             hb.parent_id,
+             hb.data,
+             hb.title,
+             hb.creator_id,
+             hb.updated_at
+        FROM api_historicalblock hb
+       WHERE hb.id = %(root_id)s
+         AND hb.history_date <= %(rollback_date)s
+       ORDER BY hb.history_date DESC
+       LIMIT 1
+    ) AS anchor
+
+  UNION ALL
+
+  -- 2) Рекурсивная часть: для каждого блока cte «распаковываем» childOrder
+  --    и берём запись из истории, существовавшую на момент %(rollback_date)s
+  SELECT child.id,
+         child.parent_id,
+         child.data,
+         child.title,
+         child.creator_id,
+         child.updated_at
+    FROM cte
+    JOIN LATERAL (
+      -- json_array_elements_text((cte.data->'childOrder')::json) позволяет распаковать
+      -- массив ID из data->'childOrder'
+      SELECT (json_array_elements_text((cte.data->'childOrder')::json))::uuid AS child_id
+    ) AS j ON true
+
+    JOIN LATERAL (
+      SELECT hb2.id,
+             hb2.parent_id,
+             hb2.data,
+             hb2.title,
+             hb2.creator_id,
+             hb2.updated_at
+        FROM api_historicalblock hb2
+       WHERE hb2.id = j.child_id
+         AND hb2.history_date <= %(rollback_date)s
+       ORDER BY hb2.history_date DESC
+       LIMIT 1
+    ) AS child ON true
+
+),
+
+-- 3) Записываем (или обновляем) их в основную таблицу
+upserted AS (
+  INSERT INTO api_block (id, parent_id, data, title, creator_id, updated_at)
+    SELECT c.id,
+           c.parent_id,
+           c.data,
+           c.title,
+           c.creator_id,
+           c.updated_at
+      FROM cte c
+  ON CONFLICT (id) DO UPDATE
+     SET parent_id  = EXCLUDED.parent_id,
+         data       = EXCLUDED.data,
+         title      = EXCLUDED.title,
+         creator_id = EXCLUDED.creator_id,
+         updated_at = EXCLUDED.updated_at
+  RETURNING id
+)
+
+-- Если нужно – можно сделать ещё шаги (например, вернуть JSON, проставить разрешения и т.д.)
+SELECT id FROM upserted;
+'''

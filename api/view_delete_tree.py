@@ -65,7 +65,7 @@ def _delete_tree(block, user_id):
 
     # Проверка наличия ссылок на удаляемые блоки
     if BlockLink.objects.filter(source__id__in=block_ids).exists():
-        return Response({'detail': "You can't remove the tree. There are links."},
+        return Response({'detail': "You can't delete a tree. It has blocks - which are referenced."},
                         status=status.HTTP_400_BAD_REQUEST)
 
     parent_block = block.parent

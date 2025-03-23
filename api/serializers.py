@@ -99,8 +99,10 @@ def get_object_for_block(block, children=None):
         'title': block.title,
         'data': block.data,
         'updated_at': block.updated_at,
+        'parent_id': str(block.parent_id),
         'children': children if isinstance(children, (list, str)) else [str(child.id) for child in block.children.all()]
     }
+
 
 def get_forest_serializer(rows):
     # blocks_by_root: для каждого root_id храним словарь блоков, которые явно загружены (есть строка с данными)
@@ -126,6 +128,7 @@ def get_forest_serializer(rows):
         # Сохраняем данные блока только если есть явная строка (то есть, мы загружаем корректные поля)
         blocks_by_root[r][b] = {
             "id": b,
+            "parent_id": p,
             "title": title,
             "data": parse_json(data),
             "updated_at": updated_at.isoformat() if updated_at else None,
@@ -158,6 +161,7 @@ def get_forest_serializer(rows):
             result[r] = filtered
     return result
 
+
 def load_empty_block_serializer(rows, max_depth):
     blocks = {}
     children_map = defaultdict(list)  # parent_id_str -> list of child_id_str
@@ -170,10 +174,11 @@ def load_empty_block_serializer(rows, max_depth):
             blocks[block_id_str] = {
                 "id": block_id_str,
                 "title": title,
+                "parent_id": parent_id_str,
                 "data": json.loads(data or {}),
                 "updated_at": updated_at.isoformat() if updated_at else None,
                 "children": []
-            } if permission != 'deny' else {**FORBIDDEN_BLOCK, 'id': block_id_str}
+            } if permission != 'deny' else {**FORBIDDEN_BLOCK, 'id': block_id_str, 'parent_id': parent_id_str}
 
         if parent_id_str:
             children_map[parent_id_str].append(block_id_str)
@@ -211,6 +216,7 @@ def block_link_serializer(rows, max_depth):
         # Парсим данные и формируем блок
         block = {
             'id': row['id'],
+            'parent_id': parent_id,
             'title': row['title'],
             'data': json.loads(row['data']),
             'updated_at': row['updated_at'],
@@ -231,6 +237,7 @@ def block_link_serializer(rows, max_depth):
     filtered_blocks = {
         block_id: {
             'id': block['id'],
+            'parent_id': block['parent_id'],
             'title': block['title'],
             'data': block['data'],
             'updated_at': block['updated_at'],

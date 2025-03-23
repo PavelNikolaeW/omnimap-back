@@ -36,8 +36,20 @@ INTERNAL_IPS = [
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True  # Для разработки, для продакшена CORS_ALLOWED_ORIGINS
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'x-operation-uuid',
+]
+CORS_EXPOSE_HEADERS = ['X-Operation-UUID']
 # CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
-
 
 # Application definition
 
@@ -88,6 +100,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'api.middleware.EchoUUIDMiddleware',
 ]
 
 ROOT_URLCONF = 'block_api.urls'
