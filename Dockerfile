@@ -1,14 +1,33 @@
 FROM python:3.10-slim
-#FROM python:3.10
 
 WORKDIR /block_api
 
+# Установим зависимости системы для supervisor и прочего
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libc-dev libffi-dev \
+    curl supervisor \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Скопируем проект
 COPY . ./
+
+CMD ["rm", ".env"]
+
+# Установим зависимости Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Установим переменные окружения
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DJANGO_SETTINGS_MODULE=block_api.settings
+    DJANGO_SETTINGS_MODULE=block_api.settings \
+    PATH="/block_api/venv/bin:$PATH"
 
-RUN chmod +x /block_api/entrypoint.sh
-ENTRYPOINT ["/bin/sh", "/block_api/entrypoint.sh"]
+# Копируем конфигурацию supervisord
+#COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Открываем порт (если нужно)
+#EXPOSE 8000
+
+# Старт
+#CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

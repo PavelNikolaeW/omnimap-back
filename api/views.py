@@ -1,7 +1,8 @@
 import json
 import logging
 import uuid
-from collections import defaultdict
+from collections import defaultdict, namedtuple
+from itertools import chain
 
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
@@ -29,6 +30,9 @@ from .tasks import send_message_block_update, send_message_subscribe_user, set_b
     set_block_group_permissions_task
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
+from celery import chain as celery_chain
+
+PermissionData = namedtuple('PermissionData', ['user', 'permission'])
 
 User = get_user_model()
 
@@ -52,9 +56,9 @@ class TaskStatusView(APIView):
 
 
 class StandardResultsSetPagination(PageNumberPagination):
-    page_size = 10  # Количество объектов на страницу
+    page_size = 200  # Количество объектов на страницу
     page_size_query_param = 'page_size'
-    max_page_size = 100
+    max_page_size = 200
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -65,27 +69,65 @@ class BlockSearchAPIView(generics.ListAPIView):
     serializer_class = BlockSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
+    ordering = ['-updated_at', 'id']
+    ordering_fields = ['updated_at']
+
+    def _get_subtree_ids(self, root_id):
+        """
+        Возвращает список UUID всех блоков в поддереве с корнем root_id (включая сам root_id),
+        учитывая обычные связи и линковые блоки без использования EXISTS.
+        """
+        table = Block._meta.db_table
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                WITH RECURSIVE subtree AS (
+                    -- базовый случай: берем id и data
+                    SELECT id, data
+                      FROM {table}
+                     WHERE id = %s
+
+                    UNION ALL
+
+                    -- рекурсивный случай: берем id и data
+                    SELECT b.id, b.data
+                      FROM {table} b
+                      JOIN subtree s 
+                        ON b.parent_id = s.id
+                        OR (
+                            s.data->>'view' = 'link'
+                            AND (s.data->>'source')::uuid = b.id
+                        )
+                )
+                SELECT DISTINCT id FROM subtree;
+            """, [str(root_id)])
+            return [row[0] for row in cursor.fetchall()]
 
     def get_queryset(self):
-        query = self.request.GET.get('q', '').strip()
-        include_public = self.request.GET.get('include_public', 'false').lower() == 'true'
         user = self.request.user
+        query = self.request.GET.get('q', '').strip()
+        root = self.request.GET.get('root')
+        everywhere = self.request.GET.get('everywhere', 'false').lower() == 'true'
 
-        filters = Q(creator=user)
+        # 1) Блоки, к которым у пользователя есть нужные права
+        perm_filter = Q(permissions__user=user,
+                        permissions__permission__in=ALLOWED_SHOW_PERMISSIONS)
+        qs = Block.objects.filter(perm_filter).distinct()
 
-        # Добавляем публичные блоки, если параметр include_public=True
-        if include_public:
-            filters |= Q(access_type='public')
+        # 2) Ограничение поддеревом, если нужно
+        if not everywhere and root:
+            # проверим, что root существует — чтобы сразу 404, а не пустой список
+            get_object_or_404(Block, pk=root)
+            subtree_ids = self._get_subtree_ids(root)
+            qs = qs.filter(id__in=subtree_ids)
 
-        blocks = Block.objects.filter(filters)
-
+        # 3) Накладываем поиск по тексту и заголовку
         if query:
-            blocks = blocks.filter(
+            qs = qs.filter(
                 Q(title__icontains=query) |
                 Q(data__text__icontains=query)
             )
 
-        return blocks
+        return qs
 
 
 class RegisterView(APIView):
@@ -253,22 +295,26 @@ def create_block(request, parent_id):
     new_block = Block.objects.create(
         creator_id=user.id,
         title=request.data.get('title', ""),
-        data=data)
-    parent_permissions = BlockPermission.objects.filter(block=parent_block)
+        data=data
+    )
+    parent_permissions = chain(
+        BlockPermission.objects.filter(block=parent_block).exclude(user=user),
+        [PermissionData(user=user, permission='delete')]
+    )
     with transaction.atomic():
         new_permissions = [
             BlockPermission(
                 block=new_block,
                 user=perm.user,
-                permission=perm.permission
-            )
-            for perm in parent_permissions
+                permission=perm.permission) for perm in parent_permissions
         ]
         BlockPermission.objects.bulk_create(new_permissions)  # Массовое создание разрешений
     parent_block.add_child(new_block)
-    send_message_subscribe_user.delay([str(new_block.id)], [perm.user.id for perm in parent_permissions])
-    send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
-    send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block))
+    celery_chain(
+        send_message_subscribe_user.delay([str(new_block.id)], [perm.user.id for perm in new_permissions]),
+        send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block)),
+        send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block)),
+    )()
     return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
 
@@ -319,7 +365,8 @@ def create_link_on_block(request, parent_id, source_id):
 
         # Отправка сообщений о подписке одним батчем
         user_ids = {perm.user.id for perm in parent_rem}
-        send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids))
+
+        parent_block.add_child(link)
 
         _ = [set_block_permissions_task.delay(
             initiator_id=user.id,
@@ -328,11 +375,11 @@ def create_link_on_block(request, parent_id, source_id):
             new_permission=perm.permission,
         ) for perm in parent_rem]
 
-        # Добавляем новый блок в дерево
-        parent_block.add_child(link)
-
-        send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
-        send_message_block_update.delay(link.id, get_object_for_block(link))
+        celery_chain(
+            send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids)),
+            send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block)),
+            send_message_block_update.delay(link.id, get_object_for_block(link))
+        )
 
     return Response([
         get_object_for_block(parent_block),
@@ -362,8 +409,7 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
         old_parent = get_object_or_404(Block, id=old_parent_id)
         new_parent = get_object_or_404(Block, id=new_parent_id)
         old_parent.remove_child(child)
-        new_parent.add_child(child)
-        new_parent.set_child_order(child_order)
+        new_parent.add_child_and_set_order(child, child_order)
         existing_source_perms = list(BlockPermission.objects.filter(block_id=new_parent)
                                      .values_list('user_id', 'permission'))
         _ = [set_block_permissions_task.delay(
@@ -624,7 +670,7 @@ class CopyBlockView(APIView):
         # Асинхронная отправка сообщений об обновлении блоков
         send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
         send_message_subscribe_user.delay(list(copies.keys()), [user.id])
-        return Response(copies, status=status.HTTP_200_OK)
+        return Response(copies, status=status.HTTP_200_OK, headers={'x-copy-block-id': mapped[src_ids[0]]})
 
 
 def get_flat_map(user_id, block_ids):

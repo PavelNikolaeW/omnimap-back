@@ -47,9 +47,10 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
     'x-operation-uuid',
+    'x-copy-block-id',
 ]
-CORS_EXPOSE_HEADERS = ['X-Operation-UUID']
-# CSRF_TRUSTED_ORIGINS = ['http://193.227.240.214:8000', 'http://193.227.240.214', 'http://193.227.240.214/admin']
+CORS_EXPOSE_HEADERS = ['X-Operation-UUID', 'x-copy-block-id']
+CSRF_TRUSTED_ORIGINS = os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS").split(",")
 
 # Application definition
 
@@ -90,6 +91,7 @@ REST_FRAMEWORK = {
 DEFAULT_JSON_ENCODER = 'api.models.CustomJSONEncoder'
 
 MIDDLEWARE = [
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'debug_toolbar.middleware.DebugToolbarMiddleware',
     'simple_history.middleware.HistoryRequestMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -134,7 +136,7 @@ DATABASES = {
         'USER': os.getenv('SQL_USER', ''),
         'PASSWORD': os.getenv('SQL_PASSWD', ''),
         'HOST': os.getenv('SQL_HOST', ''),
-        'PORT': 5433,
+        'PORT': os.getenv('SQL_PORT', ''),
         'CONN_MAX_AGE': 600,
     },
     # 'target': {
@@ -182,6 +184,7 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'static'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # STATICFILES_DIRS = [
 #     BASE_DIR / 'static',
@@ -243,9 +246,11 @@ RABBITMQ_HOST_PORT = os.environ.get('RABBITMQ_HOST_PORT')
 RABBITMQ_EXCHANGES = os.environ.get('RABBITMQ_EXCHANGES')
 RABBITMQ_QUEUE = os.environ.get('RABBITMQ_QUEUE')
 RABBITMQ_ROUTING_KEY = os.environ.get('RABBITMQ_ROUTING_KEY')
+REDIS_HOST = os.environ.get('REDIS_HOST')
+
 
 CELERY_BROKER_URL = f'amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST_PORT}//'
-CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = f'redis://{REDIS_HOST}:6379/0'
 CELERY_RESULT_EXPIRES = 3600
 CELERY_TASK_SOFT_TIME_LIMIT = 300
 CELERY_TASK_TIME_LIMIT = 360

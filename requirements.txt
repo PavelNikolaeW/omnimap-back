@@ -14,3 +14,5 @@ uuid6==2024.7.10
 numpy==2.1.1
 celery==5.4.0
 redis==5.2.1
+gunicorn==23.0.0
+whitenoise==6.8.2

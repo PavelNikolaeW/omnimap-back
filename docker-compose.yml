@@ -1,39 +1,44 @@
 version: '3'
 
 services:
-  postgres:
-    image: postgres:13
-    environment:
-      POSTGRES_DB: ${SQL_NAME}
-      POSTGRES_USER: ${SQL_USER}
-      POSTGRES_PASSWORD: ${SQL_PASSWD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+  redis:
+    image: registry-ci.delta.sbrf.ru/base/docker.io/redis:alpine
     networks:
       - mynetwork
+    ports:
+      - "6379:6379"
 
-  block_api:
-    container_name: block_api_container
+  rabbitmq:
+    image: base.registry-ci.delta.sbrf.ru/base/docker.io/rabbitmq:3.12.14-management-alpine
+    networks:
+      - mynetwork
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  omnimap_back:
+#    image: omnimap-back-omnimap_back:latest
+    container_name: omniMap-back
     build:
       context: .
       dockerfile: Dockerfile
-    environment:
-      - DEBUG=1
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - SQL_HOST=postgres
     volumes:
       - .:/usr/src/app
-    depends_on:
-      - postgres
+      - static_volume:/usr/src/app/static
     networks:
       - mynetwork
     ports:
       - "8000:8000"
 
   frontend:
+#    image: omnimap-back-frontend:latest
     build:
-      context: ${FRONT_PATH}
+      context: /Users/20677338/Desktop/omniMap-user-interface
       dockerfile: Dockerfile
+      args:
+        - NODE_ENV=production
+    command: |
+      npm cache clean --force && npm install && npm run build && npx serve -s build
     volumes:
       - .:/usr/src/app
     networks:
@@ -41,9 +46,23 @@ services:
     ports:
       - "3000:3000"
 
+  sinc:
+    build:
+      context: /Users/20677338/Desktop/omnimap-sinc
+      dockerfile: Dockerfile
+    volumes:
+      - .:/usr/src/app
+    networks:
+      - mynetwork
+    ports:
+      - "7999:7999"
+
 networks:
   mynetwork:
     driver: bridge
 
 volumes:
-  postgres_data:
+  static_volume:
+
+#export DOCKER_HOST=10.3.121.150:2375
+#docker-compose  -f ./docker-compose.yml -p omnimap-back build --no-cache frontend

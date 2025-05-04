@@ -50,6 +50,18 @@ class Block(models.Model):
             custom_grid_update(custom_grid, str(child.id))
         self.save()
 
+    def add_child_and_set_order(self, child, new_order):
+        """
+        Добавляет дочерний блок `child` и сразу выставляет порядок `new_order`
+        """
+        self.children.add(child)
+
+        self.data.setdefault('childOrder', [])
+        if str(child.id) not in new_order:
+            new_order.append(str(child.id))
+        self.data['childOrder'] = new_order
+        self.save()
+
     def add_children(self, children):
         for child in children:
             self.add_child(child)
