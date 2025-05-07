@@ -331,6 +331,8 @@ def create_new_tree(request):
         user=user,
         permission='delete'
     ).save()
+    send_message_subscribe_user.delay([str(block.id)], [user.id])
+    send_message_block_update.delay(str(block.id), get_object_for_block(block))
     return Response(get_object_for_block(block), status=status.HTTP_201_CREATED)
 
 
