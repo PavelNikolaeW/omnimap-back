@@ -310,11 +310,12 @@ def create_block(request, parent_id):
         ]
         BlockPermission.objects.bulk_create(new_permissions)  # Массовое создание разрешений
     parent_block.add_child(new_block)
-    celery_chain(
-        send_message_subscribe_user.delay([str(new_block.id)], [perm.user.id for perm in new_permissions]),
-        send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block)),
-        send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block)),
-    )()
+    new_block.parent_id = parent_block.id
+
+    send_message_subscribe_user.delay([str(new_block.id)], [perm.user.id for perm in new_permissions])
+    send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
+    send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block))
+
     return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
 
@@ -375,11 +376,9 @@ def create_link_on_block(request, parent_id, source_id):
             new_permission=perm.permission,
         ) for perm in parent_rem]
 
-        celery_chain(
-            send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids)),
-            send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block)),
-            send_message_block_update.delay(link.id, get_object_for_block(link))
-        )
+        send_message_subscribe_user.delay([str(link.id), str(source_block.id)], list(user_ids))
+        send_message_block_update.delay(parent_block.id, get_object_for_block(parent_block))
+        send_message_block_update.delay(link.id, get_object_for_block(link))
 
     return Response([
         get_object_for_block(parent_block),
@@ -419,7 +418,7 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
             new_permission=permission,
         ) for user_id, permission in existing_source_perms]
 
-        res = [get_object_for_block(new_parent), get_object_for_block(old_parent)]
+        res = [get_object_for_block(new_parent), get_object_for_block(old_parent), get_object_for_block(child)]
         send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
         send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))
     return Response(res, status=status.HTTP_200_OK)

@@ -74,7 +74,6 @@ def send_message_subscribe_user(self, block_uuids, user_ids):
                 for user_id in user_ids
             ]
 
-            # Отправка всех сообщений сразу
             for message in messages:
                 producer.publish(
                     message,
@@ -90,8 +89,28 @@ def send_message_subscribe_user(self, block_uuids, user_ids):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_access_update(self, block_uuids, user_id, permission, start_block_ids, group_id=0):
+def send_message_unsubscribe_user(self, block_uuids):
+    try:
+        with Connection(RABBITMQ_URL) as conn:
+            producer = Producer(conn)
+            producer.publish(
+                {
+                    'action': 'unsubscribe',
+                    'block_uuids': block_uuids,
+                },
+                exchange=exchange,
+                routing_key=ROUTING_KEY,
+                serializer='json',
+                declare=[exchange]
+            )
 
+    except Exception as e:
+        print(f'Error sending: {e}')
+        self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
+def send_message_access_update(self, block_uuids, user_id, permission, start_block_ids, group_id=0):
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)

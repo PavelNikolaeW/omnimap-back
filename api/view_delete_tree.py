@@ -9,7 +9,7 @@ from api.models import Block, BlockLink
 from api.serializers import get_object_for_block
 from api.utils.decorators import check_block_permissions
 from api.utils.query import delete_tree_query
-from api.tasks import send_message_block_update
+from api.tasks import send_message_block_update, send_message_unsubscribe_user
 
 
 @api_view(['DELETE'])
@@ -46,7 +46,7 @@ def _delete_single_block(block, source):
             send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
         link.delete()
         block.delete()
-
+    send_message_unsubscribe_user.delay([str(block.id)])
     return Response({'parent': get_object_for_block(parent_block)}, status=status.HTTP_200_OK)
 
 
@@ -57,7 +57,7 @@ def _delete_tree(block, user_id):
         cursor.execute(delete_tree_query, {'block_id': block.id, 'user_id': user_id})
         rows = cursor.fetchall()
 
-    block_ids = [row[0] for row in rows]
+    block_ids = [str(row[0]) for row in rows]
 
     if not block_ids:
         return Response({'detail': 'Forbidden. Some sub-branches are not available for deletion.'},
@@ -75,9 +75,10 @@ def _delete_tree(block, user_id):
         if parent_block:
             parent_block.remove_child(block)
             parent_data = get_object_for_block(parent_block)
-            send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
+            send_message_block_update.delay(str(parent_block.id), parent_data)
 
         # Удаление всех связанных блоков и связей
+        send_message_unsubscribe_user.delay(block_ids)
         Block.objects.filter(id__in=block_ids).delete()
         BlockLink.objects.filter(target__id__in=block_ids).delete()
 
