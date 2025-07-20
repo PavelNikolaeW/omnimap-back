@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'debug_toolbar',
     'corsheaders',
     'simple_history',
+    'psqlextra',
 ]
 
 REST_FRAMEWORK = {
@@ -131,7 +132,7 @@ WSGI_APPLICATION = 'block_api.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
+        'ENGINE': 'psqlextra.backend',
         'NAME': os.getenv('SQL_NAME'),
         'USER': os.getenv('SQL_USER', ''),
         'PASSWORD': os.getenv('SQL_PASSWD', ''),

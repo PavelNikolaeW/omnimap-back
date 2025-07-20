@@ -3,7 +3,7 @@ from django.urls import path
 from .view_delete_tree import delete_tree
 from .views import (RegisterView, load_tress, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
-                    TaskStatusView, create_new_tree)
+                    TaskStatusView, create_new_tree, import_json)
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
     GroupMembersView
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
@@ -14,6 +14,7 @@ app_name = 'api'
 urlpatterns = [
     path('load-trees/', load_tress, name='root-block'),
     path('load-empty/', load_empty_blocks, name='load-empty'),
+    path('import/json/<uuid:block_id>/', import_json, name='import-json'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
     path('new-tree/', create_new_tree, name='new-tree'),

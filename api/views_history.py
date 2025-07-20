@@ -50,7 +50,6 @@ class BlockHistoryUndoView(APIView):
     FORCE_PERMS = ['delete']
 
     def post(self, request, ):
-        print(request.data.get('operation'))
         operation = request.data.get('operation')
         force = request.data.get('force', False)
         user = request.user
@@ -287,7 +286,6 @@ class BlockHistoryUndoView(APIView):
         """
         Отмена копирования блока: удаляем скопированный блок + его дочерние элементы.
         """
-        print(operation)
         parent_id = operation['data'].get('dest')
         copy_id = operation.get('copyId')
         if not parent_id or not copy_id:

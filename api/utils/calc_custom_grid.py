@@ -208,7 +208,6 @@ def set_child_position(x, y, col_span, row_span):
 # ==============================
 
 def custom_grid_update(customGrid, child):
-    print(customGrid)
     """
     Обновляет customGrid, добавляя нового ребенка.
 
@@ -229,7 +228,6 @@ def custom_grid_update(customGrid, child):
 
     # Определяем текущие размеры сетки
     col, row = calc_size_grid(customGrid['grid'])
-    print(col, row)
 
     # Создаем матрицу сетки с занятыми областями
     grid_matrix = mark_occupied_areas(occupants, col, row)
@@ -242,7 +240,6 @@ def custom_grid_update(customGrid, child):
     # Ищем место для размещения нового прямоугольника
     new_grid_shape, (x, y) = find_and_place_np(grid_matrix, min_rectangle)
     pprint(new_grid_shape)
-    print(x, y)
     # Обновляем сетку, если размеры изменились
     if (col, row) != new_grid_shape:
         customGrid['grid'] = set_grid(*new_grid_shape)

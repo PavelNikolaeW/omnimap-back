@@ -53,6 +53,28 @@ def send_message_block_update(self, block_uuid, block_data):
 
 
 @shared_task(bind=True, max_retries=3)
+def send_message_blocks_update(self, blocks):
+    try:
+        with Connection(RABBITMQ_URL) as conn:
+            producer = Producer(conn)
+            message = {
+                'action': 'update_blocks',
+                'blocks': blocks
+            }
+            producer.publish(
+                message,
+                exchange=exchange,
+                routing_key=ROUTING_KEY,
+                serializer='json',
+                declare=[exchange],
+            )
+    except Exception as e:
+        # Обработка ошибок: логирование, повторные попытки и т.д.
+        print(f'Error sending: {e}')
+        self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
 def send_message_subscribe_user(self, block_uuids, user_ids):
     """
     Отправляет уведомления о подписке пользователям.

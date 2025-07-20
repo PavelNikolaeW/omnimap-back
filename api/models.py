@@ -46,6 +46,7 @@ class Block(models.Model):
     def add_child(self, child):
         self.children.add(child)
         self.data.setdefault('childOrder', []).append(str(child.id))
+        print('self.id=', self.id, child)
         if custom_grid := self.data.get('customGrid'):
             custom_grid_update(custom_grid, str(child.id))
         self.save()
@@ -85,6 +86,13 @@ class Block(models.Model):
             raise ValueError("Новый порядок должен содержать все текущие дочерние блоки и только их.")
         self.data['childOrder'] = new_order
         self.save(update_fields=['data'])
+
+    def is_my_child(self, child_id):
+        list_child_id = list(self.children.values_list('id', flat=True))
+        if isinstance(child_id, str):
+            return uuid.UUID(child_id) in list_child_id
+        elif isinstance(child_id, uuid.UUID):
+            return child_id in list_child_id
 
 
 class Group(models.Model):

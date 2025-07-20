@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import uuid
@@ -7,7 +8,9 @@ from itertools import chain
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.db.models import Q
+from django.db.models.expressions import RawSQL
 from django.shortcuts import get_object_or_404
+from psycopg2._json import Json
 from psycopg2.extras import execute_values
 from rest_framework import status, generics
 from rest_framework.permissions import IsAuthenticated
@@ -27,7 +30,7 @@ from .serializers import (RegisterSerializer,
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query, delete_tree_query, get_block_for_url
 from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task, \
-    set_block_group_permissions_task
+    set_block_group_permissions_task, send_message_blocks_update
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
 from celery import chain as celery_chain
@@ -440,6 +443,85 @@ def edit_block(request, block_id):
     block.save()
     send_message_block_update.delay(block.id, get_object_for_block(block))
     return Response(get_object_for_block(block), status=status.HTTP_200_OK)
+
+
+def build_values(rows):
+    placeholders = []
+    params = []
+    for row in rows:
+        placeholders.append("(%s,%s,%s,%s,%s,%s)")
+        params.extend([
+            row['id'], row['title'], Json(row['data']),
+            row['parent_id'], row['creator_id'], row['updated_at']
+        ])
+    return ','.join(placeholders), params
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@check_block_permissions({'block_id': ['edit_ac', 'edit', 'delete']})
+def import_json(request, block_id):
+    data = request.data.get('data', {})
+    root_id = request.data.get('root_id', None)
+    parent_block = get_object_or_404(Block, id=block_id)
+    rows = [{
+        'id': b['id'],
+        'title': b['title'],
+        'data': b['data'],
+        'parent_id': b['parent_id'],
+        'creator_id': request.user.id,
+        'updated_at': b['updated_at'],
+    } for b in data.values()]
+
+    values_sql, params = build_values(rows)
+
+    with connection.cursor() as cursor:
+        cursor.execute(f"""
+            INSERT INTO api_block (id, title, data, parent_id, creator_id, updated_at)
+            VALUES {values_sql}
+            ON CONFLICT (id) DO UPDATE SET
+                title       = EXCLUDED.title,
+                data        = EXCLUDED.data,
+                parent_id   = EXCLUDED.parent_id,
+                updated_at  = EXCLUDED.updated_at
+            WHERE (api_block.title, api_block.data, api_block.parent_id, api_block.updated_at)
+              IS DISTINCT FROM
+                  (EXCLUDED.title, EXCLUDED.data, EXCLUDED.parent_id, EXCLUDED.updated_at)
+            RETURNING id, xmax
+        """, params)
+
+        inserted_ids = set()
+        updated_ids = set()
+        for row_id, xmax in cursor.fetchall():
+            if xmax == 0:
+                inserted_ids.add(row_id)
+            else:
+                updated_ids.add(row_id)
+        if not parent_block.is_my_child(root_id):
+            parent_block.add_child(Block.objects.get(id=root_id))
+        else:
+            print('kek')
+
+    all_ids = {row['id'] for row in rows}
+    unchanged_ids = all_ids - inserted_ids - updated_ids
+
+    send_message_subscribe_user.delay(list(unchanged_ids), [request.user.id])
+    updated_blocks = {}
+    for id_block in (inserted_ids | updated_ids):
+        tmp = data[str(id_block)]
+        tmp['updated_at'] = int(datetime.datetime.fromisoformat(tmp['updated_at']).timestamp())
+        tmp['data'] = json.dumps(tmp['data'])
+        tmp['children'] = json.dumps(tmp['children'])
+        updated_blocks[str(id_block)] = tmp
+    celery_chain(
+        send_message_subscribe_user.si(list(inserted_ids), [request.user.id]),
+        send_message_blocks_update.si(updated_blocks)
+    )()
+    return Response({
+        'created': inserted_ids,
+        'updated': updated_ids,
+        'unchanged': unchanged_ids
+    }, status=status.HTTP_201_CREATED)
 
 
 class CopyBlockView(APIView):
