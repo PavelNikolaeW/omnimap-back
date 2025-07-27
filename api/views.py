@@ -461,22 +461,51 @@ def build_values(rows):
 @permission_classes([IsAuthenticated])
 @check_block_permissions({'block_id': ['edit_ac', 'edit', 'delete']})
 def import_json(request, block_id):
+    user = request.user
     data = request.data.get('data', {})
-    root_id = request.data.get('root_id', None)
+    root_id = request.data.get('root_id')
+
+    if not data or not root_id:
+        return Response({'detail': 'root_id and data are required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
     parent_block = get_object_or_404(Block, id=block_id)
-    rows = [{
-        'id': b['id'],
-        'title': b['title'],
-        'data': b['data'],
-        'parent_id': b['parent_id'],
-        'creator_id': request.user.id,
-        'updated_at': b['updated_at'],
-    } for b in data.values()]
+
+    rows = [
+        {
+            'id': b['id'],
+            'title': b.get('title', ''),
+            'data': b.get('data', {}),
+            'parent_id': b.get('parent_id'),
+            'creator_id': user.id,
+            'updated_at': b.get('updated_at'),
+        }
+        for b in data.values()
+    ]
+
+    block_ids = [row['id'] for row in rows]
+    existing_ids = set(
+        Block.objects.filter(id__in=block_ids).values_list('id', flat=True)
+    )
+
+    if existing_ids:
+        allowed_ids = set(
+            BlockPermission.objects.filter(
+                block_id__in=existing_ids,
+                user=user,
+                permission__in=['edit', 'edit_ac', 'delete']
+            ).values_list('block_id', flat=True)
+        )
+        denied_ids = set(str(bid) for bid in existing_ids if bid not in allowed_ids)
+        if denied_ids:
+            return Response({'detail': 'Forbidden', 'blocks': list(denied_ids)},
+                            status=status.HTTP_403_FORBIDDEN)
 
     values_sql, params = build_values(rows)
 
-    with connection.cursor() as cursor:
-        cursor.execute(f"""
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute(
+            f"""
             INSERT INTO api_block (id, title, data, parent_id, creator_id, updated_at)
             VALUES {values_sql}
             ON CONFLICT (id) DO UPDATE SET
@@ -488,24 +517,54 @@ def import_json(request, block_id):
               IS DISTINCT FROM
                   (EXCLUDED.title, EXCLUDED.data, EXCLUDED.parent_id, EXCLUDED.updated_at)
             RETURNING id, xmax
-        """, params)
+            """,
+            params,
+        )
 
         inserted_ids = set()
         updated_ids = set()
         for row_id, xmax in cursor.fetchall():
             if xmax == 0:
-                inserted_ids.add(row_id)
+                inserted_ids.add(str(row_id))
             else:
-                updated_ids.add(row_id)
+                updated_ids.add(str(row_id))
+
         if not parent_block.is_my_child(root_id):
             parent_block.add_child(Block.objects.get(id=root_id))
-        else:
-            print('kek')
 
-    all_ids = {row['id'] for row in rows}
+        if inserted_ids:
+            parent_map = {
+                row['id']: row['parent_id'] for row in rows if str(row['id']) in inserted_ids
+            }
+            parent_ids = {pid for pid in parent_map.values() if pid}
+            perms = BlockPermission.objects.filter(block_id__in=parent_ids).select_related('user')
+            perms_by_parent = defaultdict(list)
+            for perm in perms:
+                perms_by_parent[str(perm.block_id)].append(perm)
+
+            new_permissions = []
+            subscribe_users = set()
+            for new_id, p_id in parent_map.items():
+                for perm in perms_by_parent.get(str(p_id), []):
+                    if perm.user_id == user.id:
+                        continue
+                    new_permissions.append(
+                        BlockPermission(block_id=new_id, user=perm.user, permission=perm.permission)
+                    )
+                    subscribe_users.add(perm.user_id)
+                new_permissions.append(
+                    BlockPermission(block_id=new_id, user=user, permission='delete')
+                )
+                subscribe_users.add(user.id)
+
+            if new_permissions:
+                BlockPermission.objects.bulk_create(new_permissions)
+
+    all_ids = {str(row['id']) for row in rows}
     unchanged_ids = all_ids - inserted_ids - updated_ids
 
-    send_message_subscribe_user.delay(list(unchanged_ids), [request.user.id])
+    send_message_subscribe_user.delay(list(unchanged_ids), [user.id])
+
     updated_blocks = {}
     for id_block in (inserted_ids | updated_ids):
         tmp = data[str(id_block)]
@@ -513,10 +572,13 @@ def import_json(request, block_id):
         tmp['data'] = json.dumps(tmp['data'])
         tmp['children'] = json.dumps(tmp['children'])
         updated_blocks[str(id_block)] = tmp
+
+    sub_users = list(subscribe_users) if inserted_ids else [user.id]
     celery_chain(
-        send_message_subscribe_user.si(list(inserted_ids), [request.user.id]),
+        send_message_subscribe_user.si(list(inserted_ids), sub_users),
         send_message_blocks_update.si(updated_blocks)
     )()
+
     return Response({
         'created': inserted_ids,
         'updated': updated_ids,
