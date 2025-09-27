@@ -71,6 +71,7 @@ def _child_order_get(data: dict) -> List[str]:
         return []
     return [str(x) for x in raw if x is not None]
 
+
 def _child_order_set(data: dict, order: List[str]) -> dict:
     """Записываем порядок детей только в camelCase: data['childOrder']."""
     d = dict(data or {})
@@ -95,6 +96,7 @@ def _payload_core_equals(existing: Block, payload: dict) -> bool:
         if pd != ed:
             return False
     return True
+
 
 def _detect_cycles(parent_map: Dict[str, Optional[str]]) -> Set[str]:
     WHITE, GRAY, BLACK = 0, 1, 2
@@ -153,11 +155,11 @@ def _load_external_refs(payload_blocks: List[dict], import_ids: Set[_UUID]) -> D
 # ========= Шаг 2. Core upsert =========
 
 def _prepare_core_upsert(
-    ids: List[str],
-    by_id: Dict[str, dict],
-    existing: Dict[str, Block],
-    default_creator: Optional[User],
-    rep: ImportReport,
+        ids: List[str],
+        by_id: Dict[str, dict],
+        existing: Dict[str, Block],
+        default_creator: Optional[User],
+        rep: ImportReport,
 ) -> Tuple[List[Block], List[Block], Set[str]]:
     to_create: List[Block] = []
     to_update: List[Block] = []
@@ -211,7 +213,8 @@ def _apply_core_upsert(to_create: List[Block], to_update: List[Block]) -> int:
 
 # ========= Шаг 3. Родители и childOrder =========
 
-def _compute_parent_after(ids: List[str], by_id: Dict[str, dict], existing: Dict[str, Block]) -> Dict[str, Optional[str]]:
+def _compute_parent_after(ids: List[str], by_id: Dict[str, dict], existing: Dict[str, Block]) -> Dict[
+    str, Optional[str]]:
     """
     Какой parent будет «после импорта» (для цикло-детекта).
     """
@@ -227,6 +230,7 @@ def _compute_parent_after(ids: List[str], by_id: Dict[str, dict], existing: Dict
             parent_after[k] = str(db_obj.parent_id) if db_obj.parent_id else None
     return parent_after
 
+
 def _desired_children_by_parent(by_id: Dict[str, dict]) -> Dict[str, Set[str]]:
     """Карта: parent_id -> множество желаемых child_ids из data.childOrder родителя (по пэйлоаду)."""
     out: Dict[str, Set[str]] = {}
@@ -237,12 +241,13 @@ def _desired_children_by_parent(by_id: Dict[str, dict]) -> Dict[str, Set[str]]:
             out[pid] = set(order)
     return out
 
+
 def _apply_parent_updates(
-    ids: List[str],
-    by_id: Dict[str, dict],
-    blocks_by_id: Dict[str, Block],
-    existing: Dict[str, Block],
-    rep: ImportReport,
+        ids: List[str],
+        by_id: Dict[str, dict],
+        blocks_by_id: Dict[str, Block],
+        existing: Dict[str, Block],
+        rep: ImportReport,
 ) -> Tuple[Set[str], List[Tuple[Optional[str], Optional[str], str]]]:
     touched_ids: Set[str] = set()
     parent_updates: List[Block] = []
@@ -437,9 +442,11 @@ def _apply_parent_updates(
 
     return touched_ids, parent_moves
 
+
 # ========= Шаг 4. Ссылки =========
 
-def _upsert_links(payload_blocks: List[dict], existing: Dict[str, Block], blocks_by_id: Dict[str, Block]) -> Tuple[int, Set[str]]:
+def _upsert_links(payload_blocks: List[dict], existing: Dict[str, Block], blocks_by_id: Dict[str, Block]) -> Tuple[
+    int, Set[str]]:
     link_pairs: List[Tuple[str, str]] = []
     for item in payload_blocks:
         sid = str(item["id"])
@@ -478,9 +485,9 @@ def _collect_principals(payload_blocks: List[dict]) -> Tuple[Set[int], Set[int]]
 
 
 def _inherit_permissions_from_parent_if_needed(
-    b: Block,
-    item: dict,
-    groups_by_id: Dict[int, Group],
+        b: Block,
+        item: dict,
+        groups_by_id: Dict[int, Group],
 ) -> List[BlockPermission]:
     """
     Если для нового блока явные permissions не даны, а есть родитель — наследуем снимок прав родителя.
@@ -517,7 +524,8 @@ def _upsert_permissions(payload_blocks, existing: Dict[str, Block], default_crea
         for p in BlockPermission.objects.filter(block_id__in=list(existing.keys()))
     }
 
-    for k, item in payload_blocks.items() if isinstance(payload_blocks, dict) else [(b["id"], b) for b in payload_blocks]:
+    for k, item in payload_blocks.items() if isinstance(payload_blocks, dict) else [(b["id"], b) for b in
+                                                                                    payload_blocks]:
         b = existing.get(str(k))
         if not b:
             continue
@@ -599,15 +607,14 @@ def _upsert_permissions(payload_blocks, existing: Dict[str, Block], default_crea
     return inserted, touched
 
 
-
 # ========= Главная функция =========
 
 @transaction.atomic
 def import_blocks(
-    payload_blocks: List[dict],
-    *,
-    default_creator: Optional[User],
-    max_blocks: int = MAX_BLOCKS_DEFAULT,
+        payload_blocks: List[dict],
+        *,
+        default_creator: Optional[User],
+        max_blocks: int = MAX_BLOCKS_DEFAULT,
 ) -> ImportReport:
     """
     Двухпроходный импорт/апдейт блоков с учётом:
