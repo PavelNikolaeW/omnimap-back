@@ -17,7 +17,7 @@ CHUNK = 1000
 DEFAULT_CREATOR_PERMISSION = "delete"
 MAX_BLOCKS_DEFAULT = 10_000
 
-
+# TODO если id удаляется из childOrder родителя то нужно удалять этот блок
 # ========= Базовые структуры отчёта =========
 
 @dataclass
