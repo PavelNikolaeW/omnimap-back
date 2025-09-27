@@ -14,7 +14,7 @@ User = get_user_model()
 CHUNK = 1000
 
 # Настраиваемые параметры
-DEFAULT_CREATOR_PERMISSION = "edit"
+DEFAULT_CREATOR_PERMISSION = "delete"
 MAX_BLOCKS_DEFAULT = 10_000
 
 

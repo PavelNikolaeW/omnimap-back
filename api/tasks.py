@@ -10,6 +10,7 @@ from django.db import connection
 from api.models import Group, BlockLink, Block
 from api.serializers import get_object_for_block
 from api.utils.query import recursive_set_block_access_query, recursive_set_block_group_access_query
+from django.contrib.postgres.aggregates import ArrayAgg
 
 # Настройки RabbitMQ
 RABBITMQ_URL = settings.CELERY_BROKER_URL
@@ -30,7 +31,7 @@ def send_message_block_update(self, block_uuid, block_data):
         'title': block_data['title'] or '',
         'data': json.dumps(block_data['data']),
         'parent_id': block_data['parent_id'],
-        'updated_at': int(datetime.fromisoformat(str(block_data['updated_at'])).timestamp()),
+        'updated_at': int(block_data['updated_at'].timestamp()),
         'children': json.dumps(block_data['children'])
     }
     try:
@@ -57,16 +58,23 @@ def send_message_block_update(self, block_uuid, block_data):
 @shared_task(bind=True, max_retries=3)
 def send_message_blocks_update(self, block_ids):
     print(block_ids, len(block_ids))
+    rows = (
+        Block.objects
+        .filter(id__in=block_ids)
+        .annotate(child_ids=ArrayAgg('children__id', distinct=True))
+        .values('id', 'title', 'data', 'parent_id', 'updated_at', 'child_ids')
+    )
+
     blocks = {
-        str(block.id): {
-            'id': str(block.id),
-            'title': block.title,
-            'data': json.dumps(block.data),
-            'parent_id': str(block.parent_id),
-            'updated_at': int(datetime.fromisoformat(str(block.updated_at)).timestamp()),
-            'children': json.dumps([str(child.id) for child in block.children.all()])
+        str(r['id']): {
+            'id': str(r['id']),
+            'title': r['title'],
+            'data': json.dumps(r['data']),
+            'parent_id': str(r['parent_id']) if r['parent_id'] else json.dumps(False),
+            'updated_at': int(r['updated_at'].timestamp()),
+            'children': json.dumps([str(cid) for cid in (r['child_ids'] or [])])
         }
-        for block in Block.objects.filter(id__in=block_ids)
+        for r in rows
     }
     try:
         with Connection(RABBITMQ_URL) as conn:

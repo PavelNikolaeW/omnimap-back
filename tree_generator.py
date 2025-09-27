@@ -595,7 +595,7 @@ def main():
 
 
 if __name__ == "__main__":
-    # python gen_blocks.py --mode tree --nodes 50 --max-children 4 --max-depth 5 --with-creator "1" --out blocks.json
-    # python gen_blocks.py --mode calendar --year 2025 --out calendar.json
-    # python gen_blocks.py --mode calendar --year 2025 --no-weeks --no-days --out calendar_months.json
+    # python tree_generator.py --mode tree --nodes 50 --max-children 4 --max-depth 5 --with-creator "1" --out blocks.json
+    # python tree_generator.py --mode calendar --year 2025 --out calendar.json
+    # python tree_generator.py --mode calendar --year 2025 --no-weeks --no-days --out calendar_months.json
     main()
