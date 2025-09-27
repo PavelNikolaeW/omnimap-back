@@ -44,7 +44,7 @@ class BlockAdmin(admin.ModelAdmin):
             obj.id
         )
 
-    id_with_copy_button.short_description = "ID с кнопкой копирования"
+    id_with_copy_button.short_description = "ID"
 
     def parent_link(self, obj):
         """

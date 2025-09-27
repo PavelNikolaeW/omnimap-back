@@ -1,12 +1,14 @@
 from datetime import datetime
 
 from celery import shared_task
+from django.db.models import Q
 from kombu import Connection, Exchange, Producer
 from django.conf import settings
 import json
 from django.db import connection
 
-from api.models import Group, BlockLink
+from api.models import Group, BlockLink, Block
+from api.serializers import get_object_for_block
 from api.utils.query import recursive_set_block_access_query, recursive_set_block_group_access_query
 
 # Настройки RabbitMQ
@@ -53,7 +55,19 @@ def send_message_block_update(self, block_uuid, block_data):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_blocks_update(self, blocks):
+def send_message_blocks_update(self, block_ids):
+    print(block_ids, len(block_ids))
+    blocks = {
+        str(block.id): {
+            'id': str(block.id),
+            'title': block.title,
+            'data': json.dumps(block.data),
+            'parent_id': str(block.parent_id),
+            'updated_at': int(datetime.fromisoformat(str(block.updated_at)).timestamp()),
+            'children': json.dumps([str(child.id) for child in block.children.all()])
+        }
+        for block in Block.objects.filter(id__in=block_ids)
+    }
     try:
         with Connection(RABBITMQ_URL) as conn:
             producer = Producer(conn)

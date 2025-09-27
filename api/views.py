@@ -721,7 +721,9 @@ class ImportBlocksView(APIView):
             default_creator=request.user if request.user and request.user.is_authenticated else None,
             max_blocks=10_000,
         )
-
+        if report.updated > 0:
+            report.updated_ids.append(ser.validated_data["blocks"][0]['parent_id'])
+            send_message_blocks_update.delay(report.updated_ids)
         return Response(
             {
                 "created": report.created,
