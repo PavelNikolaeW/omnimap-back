@@ -1,6 +1,5 @@
 import json
 from collections import defaultdict
-from pprint import pprint
 
 from rest_framework import serializers, status
 from django.contrib.auth.password_validation import validate_password
@@ -248,3 +247,33 @@ def block_link_serializer(rows, max_depth):
     }
 
     return filtered_blocks
+
+
+class PermissionUserItemSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    permission = serializers.ChoiceField(choices=["view", "edit", "deny"])
+
+
+class PermissionGroupItemSerializer(serializers.Serializer):
+    group_id = serializers.IntegerField()
+    permission = serializers.ChoiceField(choices=["view", "edit", "deny"])
+
+
+class PermissionsSerializer(serializers.Serializer):
+    users = PermissionUserItemSerializer(many=True, required=False, default=list)
+    groups = PermissionGroupItemSerializer(many=True, required=False, default=list)
+
+
+class ImportBlockItemSerializer(serializers.Serializer):
+    id = serializers.UUIDField()  # PK твоего Block
+    title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    data = serializers.JSONField(required=False)
+    parent_id = serializers.UUIDField(required=False, allow_null=True)
+    creator_id = serializers.IntegerField(required=False, allow_null=True)  # если не передашь — возьмём request.user
+    links = serializers.ListField(child=serializers.UUIDField(), required=False, default=list)
+    permissions = PermissionsSerializer(required=False, default=dict)
+    updated_at = serializers.DateTimeField(required=False, allow_null=True)
+
+
+class ImportBlocksSerializer(serializers.Serializer):
+    blocks = ImportBlockItemSerializer(many=True)

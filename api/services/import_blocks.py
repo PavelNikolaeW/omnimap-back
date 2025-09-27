@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from uuid import UUID as _UUID
+
+from django.contrib.auth import get_user_model
+from django.db import transaction
+
+from api.models import Block, BlockPermission, Group, BlockLink
+
+User = get_user_model()
+
+CHUNK = 1000
+
+# Настраиваемые параметры
+DEFAULT_CREATOR_PERMISSION = "edit"
+MAX_BLOCKS_DEFAULT = 10_000
+
+
+# ========= Базовые структуры отчёта =========
+
+@dataclass
+class ProblemItem:
+    block_id: str
+    code: str
+    message: str
+
+
+@dataclass
+class ImportReport:
+    created: int = 0
+    updated: int = 0            # теперь это количество существующих блоков из партии, по которым были ЛЮБЫЕ изменения
+    unchanged: int = 0          # существующие из партии минус updated
+    permissions_upserted: int = 0
+    links_upserted: int = 0
+    errors: List[str] = None
+    problem_blocks: List[ProblemItem] = None
+
+
+# ========= Утилиты =========
+
+def _as_uuid_set(values: Iterable[Any]) -> Set[_UUID]:
+    out: Set[_UUID] = set()
+    for v in values:
+        try:
+            out.add(_UUID(str(v)))
+        except Exception:
+            pass
+    return out
+
+
+def chunked(it: Iterable[Any], n: int):
+    buf = []
+    for x in it:
+        buf.append(x)
+        if len(buf) >= n:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
+
+
+def _child_order_get(data: dict) -> List[str]:
+    """Берём порядок детей только из camelCase: data['childOrder']."""
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("childOrder")
+    if not isinstance(raw, list):
+        return []
+    return [str(x) for x in raw if x is not None]
+
+def _child_order_set(data: dict, order: List[str]) -> dict:
+    """Записываем порядок детей только в camelCase: data['childOrder']."""
+    d = dict(data or {})
+    d["childOrder"] = list(order)
+    return d
+
+
+def _payload_core_equals(existing: Block, payload: dict) -> bool:
+    """
+    Проверяем равенство «плоских» полей (title, data).
+    Если в payload поля нет — не считаем отличием.
+    """
+    if "title" in payload and (payload.get("title") or None) != (existing.title or None):
+        return False
+    if "data" in payload:
+        pd = payload.get("data") or {}
+        ed = existing.data or {}
+        # сравниваем childOrder: если списки различаются — считаем различием
+        if _child_order_get(pd) != _child_order_get(ed):
+            return False
+        # записей, кроме childOrder, тоже может быть много — сравним целиком
+        if pd != ed:
+            return False
+    return True
+
+def _detect_cycles(parent_map: Dict[str, Optional[str]]) -> Set[str]:
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: Dict[str, int] = {k: WHITE for k in parent_map}
+    in_cycle: Set[str] = set()
+
+    def dfs(v: str, stack: List[str]):
+        c = color[v]
+        if c == BLACK:
+            return
+        if c == GRAY:
+            if v in stack:
+                idx = stack.index(v)
+                in_cycle.update(stack[idx:])
+            return
+        color[v] = GRAY
+        stack.append(v)
+        p = parent_map.get(v)
+        if p is not None and p in parent_map:
+            dfs(p, stack)
+        color[v] = BLACK
+        stack.pop()
+
+    for node in parent_map.keys():
+        if color[node] == WHITE:
+            dfs(node, [])
+    return in_cycle
+
+
+# ========= Шаг 1. Подгрузки и первичные мапы =========
+
+def _collect_ids(payload_blocks: List[dict]) -> Tuple[Dict[str, dict], List[str]]:
+    by_id: Dict[str, dict] = {str(b["id"]): b for b in payload_blocks}
+    return by_id, list(by_id.keys())
+
+
+def _load_existing_locked(ids: List[str]) -> Dict[str, Block]:
+    qs = Block.objects.select_for_update().filter(id__in=ids)
+    return {str(b.id): b for b in qs}
+
+
+def _load_external_refs(payload_blocks: List[dict], import_ids: Set[_UUID]) -> Dict[str, Block]:
+    raw_parent_ids = [it.get("parent_id") for it in payload_blocks if it.get("parent_id") is not None]
+    raw_link_target_ids: List[Any] = []
+    for it in payload_blocks:
+        raw_link_target_ids.extend(it.get("links") or [])
+    parent_ids = _as_uuid_set(raw_parent_ids)
+    link_target_ids = _as_uuid_set(raw_link_target_ids)
+    missing_ref_ids = (parent_ids | link_target_ids) - import_ids
+    if not missing_ref_ids:
+        return {}
+    ref_dict_uuid = Block.objects.in_bulk(missing_ref_ids, field_name="id")
+    return {str(k): v for k, v in ref_dict_uuid.items()}
+
+
+# ========= Шаг 2. Core upsert =========
+
+def _prepare_core_upsert(
+    ids: List[str],
+    by_id: Dict[str, dict],
+    existing: Dict[str, Block],
+    default_creator: Optional[User],
+    rep: ImportReport,
+) -> Tuple[List[Block], List[Block], Set[str]]:
+    to_create: List[Block] = []
+    to_update: List[Block] = []
+    touched_ids_core: Set[str] = set()
+
+    for k in ids:
+        item = by_id[k]
+        if k not in existing:
+            creator_id = item.get("creator_id") or (default_creator.id if default_creator else None)
+            if not creator_id:
+                rep.problem_blocks.append(
+                    ProblemItem(
+                        block_id=k, code="creator_missing",
+                        message="creator_id is required for new blocks (no default user)."
+                    )
+                )
+                continue
+            obj = Block(id=item["id"], title=item.get("title"), data=item.get("data", {}), creator_id=creator_id)
+            to_create.append(obj)
+        else:
+            obj = existing[k]
+            if not _payload_core_equals(obj, item):
+                if "title" in item:
+                    obj.title = item["title"]
+                if "data" in item:
+                    order = _child_order_get(item.get("data") or {})
+                    if order:
+                        item["data"] = _child_order_set(item.get("data") or {}, order)
+                    obj.data = item["data"]
+                to_update.append(obj)
+                touched_ids_core.add(k)
+
+    return to_create, to_update, touched_ids_core
+
+
+def _apply_core_upsert(to_create: List[Block], to_update: List[Block]) -> int:
+    created_cnt = 0
+    if to_create:
+        for batch in chunked(to_create, CHUNK):
+            Block.objects.bulk_create(batch, ignore_conflicts=True)
+            created_cnt += len(batch)
+
+    if to_update:
+        update_fields = ["title", "data"]
+        if hasattr(Block, "updated_at"):
+            update_fields.append("updated_at")
+        Block.objects.bulk_update(to_update, update_fields)
+
+    return created_cnt
+
+
+# ========= Шаг 3. Родители и childOrder =========
+
+def _compute_parent_after(ids: List[str], by_id: Dict[str, dict], existing: Dict[str, Block]) -> Dict[str, Optional[str]]:
+    """
+    Какой parent будет «после импорта» (для цикло-детекта).
+    """
+    parent_after: Dict[str, Optional[str]] = {}
+    for k in ids:
+        db_obj = existing.get(k)
+        if not db_obj:
+            continue
+        desired_parent = by_id[k].get("parent_id", None) if k in by_id else None
+        if desired_parent is not None:
+            parent_after[k] = str(desired_parent)
+        else:
+            parent_after[k] = str(db_obj.parent_id) if db_obj.parent_id else None
+    return parent_after
+
+
+def _apply_parent_updates(
+    ids: List[str],
+    by_id: Dict[str, dict],
+    blocks_by_id: Dict[str, Block],
+    existing: Dict[str, Block],
+    rep: ImportReport,
+) -> Tuple[Set[str], List[Tuple[Optional[str], Optional[str], str]]]:
+    touched_ids: Set[str] = set()
+    parent_updates: List[Block] = []
+    parent_moves: List[Tuple[Optional[str], Optional[str], str]] = []  # (old_pid, new_pid, child_id)
+
+    parent_after = _compute_parent_after(ids, by_id, existing)
+    cycle_nodes = _detect_cycles(parent_after)
+    if cycle_nodes:
+        for bid in sorted(cycle_nodes):
+            rep.problem_blocks.append(
+                ProblemItem(
+                    block_id=bid, code="cycle_detected",
+                    message="cycle in parent chain detected; parent update skipped"
+                )
+            )
+
+    for k in ids:
+        if k in cycle_nodes:
+            continue
+        b = existing.get(k)
+        if not b:
+            continue
+        pid = by_id[k].get("parent_id") if k in by_id else None
+        if pid is None:
+            if (b.parent_id or None) is not None:
+                parent_moves.append((str(b.parent_id), None, str(b.id)))
+                b.parent = None
+                parent_updates.append(b)
+                touched_ids.add(str(b.id))
+        else:
+            np = blocks_by_id.get(str(pid))
+            if np is None:
+                rep.problem_blocks.append(
+                    ProblemItem(
+                        block_id=k, code="parent_not_found",
+                        message=f"parent_id={pid} not found; parent not updated"
+                    )
+                )
+            else:
+                old_pid = str(b.parent_id) if b.parent_id else None
+                new_pid = str(np.id)
+                if old_pid != new_pid:
+                    parent_moves.append((old_pid, new_pid, str(b.id)))
+                    b.parent = np
+                    parent_updates.append(b)
+                    touched_ids.add(str(b.id))
+
+    if parent_updates:
+        Block.objects.bulk_update(parent_updates, ["parent"])
+
+    # --- childOrder sync у задетых родителей ---
+    parent_ids_to_fix: Set[str] = set()
+    for old_pid, new_pid, _child in parent_moves:
+        if old_pid:
+            parent_ids_to_fix.add(old_pid)
+        if new_pid:
+            parent_ids_to_fix.add(new_pid)
+
+    if parent_ids_to_fix:
+        parents_map: Dict[str, Block] = {}
+        for pid in list(parent_ids_to_fix):
+            if pid in blocks_by_id:
+                parents_map[pid] = blocks_by_id[pid]
+        missing_pids = {p for p in parent_ids_to_fix if p not in parents_map}
+        if missing_pids:
+            extra = Block.objects.in_bulk(_as_uuid_set(missing_pids), field_name="id")
+            parents_map.update({str(k): v for k, v in extra.items()})
+
+        changed_parents: Dict[str, Block] = {}
+
+        def _get_order(b: Block) -> List[str]:
+            return _child_order_get(b.data or {})
+
+        for old_pid, new_pid, child_id in parent_moves:
+            if old_pid and old_pid in parents_map:
+                pb = parents_map[old_pid]
+                order = [x for x in _get_order(pb) if x != child_id]
+                pb.data = _child_order_set(pb.data or {}, order)
+                changed_parents[str(pb.id)] = pb
+
+            if new_pid and new_pid in parents_map:
+                pb = parents_map[new_pid]
+                order = _get_order(pb)
+                if child_id not in order:
+                    order = order + [child_id]
+                    pb.data = _child_order_set(pb.data or {}, order)
+                    changed_parents[str(pb.id)] = pb
+
+        if changed_parents:
+            Block.objects.bulk_update(list(changed_parents.values()), ["data"])
+            # считаем изменение данных родителя
+            touched_ids.update(changed_parents.keys())
+
+    return touched_ids, parent_moves
+
+
+# ========= Шаг 4. Ссылки =========
+
+def _upsert_links(payload_blocks: List[dict], existing: Dict[str, Block], blocks_by_id: Dict[str, Block]) -> Tuple[int, Set[str]]:
+    link_pairs: List[Tuple[str, str]] = []
+    for item in payload_blocks:
+        sid = str(item["id"])
+        if sid not in existing:
+            continue
+        for t in item.get("links", []) or []:
+            tid = str(t)
+            if tid != sid and tid in blocks_by_id:
+                link_pairs.append((sid, tid))
+
+    inserted = 0
+    touched: Set[str] = set()
+    if link_pairs:
+        uniq = {(s, t) for (s, t) in link_pairs if s != t}
+        for batch in chunked([BlockLink(source_id=s, target_id=t) for (s, t) in uniq], CHUNK):
+            BlockLink.objects.bulk_create(batch, ignore_conflicts=True)
+            inserted += len(batch)
+        for s, _ in uniq:
+            touched.add(s)
+
+    return inserted, touched
+
+
+# ========= Шаг 5. Права =========
+
+def _collect_principals(payload_blocks: List[dict]) -> Tuple[Set[int], Set[int]]:
+    user_ids: Set[int] = set()
+    group_ids: Set[int] = set()
+    for item in payload_blocks:
+        perms = item.get("permissions") or {}
+        for u in perms.get("users", []):
+            user_ids.add(u["user_id"])
+        for g in perms.get("groups", []):
+            group_ids.add(g["group_id"])
+    return user_ids, group_ids
+
+
+def _inherit_permissions_from_parent_if_needed(
+    b: Block,
+    item: dict,
+    groups_by_id: Dict[int, Group],
+) -> List[BlockPermission]:
+    """
+    Если для нового блока явные permissions не даны, а есть родитель — наследуем снимок прав родителя.
+    (Простое копирование существующих user-пермов родителя.)
+    """
+    perms = item.get("permissions") or {}
+    has_explicit = bool(perms.get("users") or perms.get("groups"))
+    if has_explicit:
+        return []
+
+    parent_id = item.get("parent_id")
+    if not parent_id:
+        return []
+
+    # Снимаем текущие user-права родителя
+    inherited: List[BlockPermission] = []
+    for up in BlockPermission.objects.filter(block_id=parent_id):
+        inherited.append(BlockPermission(block_id=b.id, user_id=up.user_id, permission=up.permission))
+    return inherited
+
+
+def _upsert_permissions(
+    payload_blocks: List[dict],
+    existing: Dict[str, Block],
+    default_creator: Optional[User],
+    rep: ImportReport,
+) -> Tuple[int, Set[str]]:
+    user_ids, group_ids = _collect_principals(payload_blocks)
+    users_by_id = {u.id: u for u in User.objects.filter(id__in=user_ids)} if user_ids else {}
+    groups_by_id = {
+        g.id: g for g in Group.objects.filter(id__in=group_ids).prefetch_related("users")
+    } if group_ids else {}
+
+    existing_up: Dict[Tuple[str, int], BlockPermission] = {}
+    candidate_pairs: List[Tuple[str, int]] = []
+
+    # Сначала собираем пары для «массового чтения» текущих прав
+    for item in payload_blocks:
+        b = existing.get(str(item["id"]))
+        if not b:
+            continue
+        perms = item.get("permissions") or {}
+
+        for u in perms.get("users", []):
+            candidate_pairs.append((str(b.id), u["user_id"]))
+        for g in perms.get("groups", []):
+            grp = groups_by_id.get(g["group_id"])
+            if grp:
+                for u in grp.users.all():
+                    candidate_pairs.append((str(b.id), u.id))
+
+        creator_id = item.get("creator_id") or (
+            b.creator_id if b and b.creator_id else (default_creator.id if default_creator else None)
+        )
+        if creator_id:
+            candidate_pairs.append((str(b.id), creator_id))
+
+    if candidate_pairs:
+        block_ids_q = list({p[0] for p in candidate_pairs})
+        user_ids_q = list({p[1] for p in candidate_pairs})
+        for p in BlockPermission.objects.filter(block_id__in=block_ids_q, user_id__in=user_ids_q):
+            existing_up[(str(p.block_id), p.user_id)] = p
+
+    new_user_perms: List[BlockPermission] = []
+    updated_user_perms: List[BlockPermission] = []
+    touched: Set[str] = set()
+
+    for item in payload_blocks:
+        b = existing.get(str(item["id"]))
+        if not b:
+            continue
+        perms = item.get("permissions") or {}
+
+        # Наследование от родителя, если явные права не переданы
+        inherited = _inherit_permissions_from_parent_if_needed(b, item, groups_by_id)
+        if inherited:
+            new_user_perms.extend(inherited)
+            touched.add(str(b.id))
+
+        # users
+        for u in perms.get("users", []):
+            uid, perm = u["user_id"], u["permission"]
+            if users_by_id and uid not in users_by_id:
+                rep.problem_blocks.append(
+                    ProblemItem(block_id=str(b.id), code="user_missing",
+                                message=f"user_id={uid} not found; permission skipped")
+                )
+                continue
+            key = (str(b.id), uid)
+            if key in existing_up:
+                obj = existing_up[key]
+                if obj.permission != perm:
+                    obj.permission = perm
+                    updated_user_perms.append(obj)
+                    touched.add(str(b.id))
+            else:
+                new_user_perms.append(BlockPermission(block_id=b.id, user_id=uid, permission=perm))
+                touched.add(str(b.id))
+
+        # groups -> users
+        for g in perms.get("groups", []):
+            gid, perm = g["group_id"], g["permission"]
+            grp = groups_by_id.get(gid)
+            if not grp:
+                rep.problem_blocks.append(
+                    ProblemItem(block_id=str(b.id), code="group_missing",
+                                message=f"group_id={gid} not found; group permissions skipped")
+                )
+                continue
+            for u in grp.users.all():
+                key = (str(b.id), u.id)
+                if key in existing_up:
+                    obj = existing_up[key]
+                    if obj.permission != perm:
+                        obj.permission = perm
+                        updated_user_perms.append(obj)
+                        touched.add(str(b.id))
+                else:
+                    new_user_perms.append(BlockPermission(block_id=b.id, user_id=u.id, permission=perm))
+                    touched.add(str(b.id))
+
+        # ensure creator permission (без насильного повышения)
+        creator_id = item.get("creator_id") or (
+            b.creator_id if b and b.creator_id else (default_creator.id if default_creator else None)
+        )
+        if creator_id:
+            key = (str(b.id), creator_id)
+            if key not in existing_up:
+                new_user_perms.append(
+                    BlockPermission(block_id=b.id, user_id=creator_id, permission=DEFAULT_CREATOR_PERMISSION)
+                )
+                touched.add(str(b.id))
+        else:
+            rep.problem_blocks.append(
+                ProblemItem(block_id=str(b.id), code="creator_missing_permission",
+                            message="cannot ensure default creator permission (no creator resolved)")
+            )
+
+    inserted = 0
+    if new_user_perms:
+        for batch in chunked(new_user_perms, CHUNK):
+            BlockPermission.objects.bulk_create(batch, ignore_conflicts=True)
+            inserted += len(batch)
+
+    if updated_user_perms:
+        BlockPermission.objects.bulk_update(updated_user_perms, ["permission"])
+        inserted += len(updated_user_perms)
+
+    return inserted, touched
+
+
+# ========= Главная функция =========
+
+@transaction.atomic
+def import_blocks(
+    payload_blocks: List[dict],
+    *,
+    default_creator: Optional[User],
+    max_blocks: int = MAX_BLOCKS_DEFAULT,
+) -> ImportReport:
+    """
+    Двухпроходный импорт/апдейт блоков с учётом:
+      - связей parent (с цикло-детектом; не сбрасываем на None, если родителя нет),
+      - ссылок (BlockLink) на внешние блоки,
+      - прав (пользователи + группы -> snapshot в user-права) + дефолт создателю,
+      - наследования прав от родителя для новых блоков (если явных прав не передано),
+      - поддержки порядка детей в parent.data.childOrder/child_order,
+    """
+    rep = ImportReport(errors=[], problem_blocks=[])
+
+    # 0) лимит и пустой вход
+    if len(payload_blocks) > max_blocks:
+        rep.errors.append(f"Too many blocks: {len(payload_blocks)} > {max_blocks}")
+        return rep
+    if not payload_blocks:
+        return rep
+
+    # 1) первичные мапы
+    by_id, ids = _collect_ids(payload_blocks)
+    existing = _load_existing_locked(ids)
+
+    import_ids_uuid = _as_uuid_set(ids)
+    ref_map = _load_external_refs(payload_blocks, import_ids_uuid)
+
+    # единая мапа «знаем обо всех» (и партия, и внешние)
+    blocks_by_id: Dict[str, Block] = {**ref_map, **existing}
+
+    # 2) core upsert
+    to_create, to_update, touched_core = _prepare_core_upsert(ids, by_id, existing, default_creator, rep)
+    created_cnt = _apply_core_upsert(to_create, to_update)
+    rep.created += created_cnt
+
+    # перечитать существующие из партии после create
+    if created_cnt:
+        existing = _load_existing_locked(ids)
+        blocks_by_id.update(existing)
+
+    # 3) parents + childOrder
+    touched_parent, _moves = _apply_parent_updates(ids, by_id, blocks_by_id, existing, rep)
+
+    # 4) links
+    links_inserted, touched_links = _upsert_links(payload_blocks, existing, blocks_by_id)
+    rep.links_upserted += links_inserted
+
+    # 5) permissions
+    perms_inserted, touched_perms = _upsert_permissions(payload_blocks, existing, default_creator, rep)
+    rep.permissions_upserted += perms_inserted
+
+    # 6) метрики updated / unchanged
+    touched_ids = set().union(touched_core, touched_parent, touched_links, touched_perms)
+    existing_in_batch = {bid for bid in ids if bid in existing}
+    rep.updated = len(existing_in_batch & touched_ids)
+    rep.unchanged = len(existing_in_batch - touched_ids)
+
+    return rep

@@ -26,9 +26,11 @@ from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS,
     Group
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
-                          load_empty_block_serializer, access_serializer, links_serializer, block_link_serializer)
+                          load_empty_block_serializer, access_serializer, links_serializer, block_link_serializer,
+                          ImportBlocksSerializer)
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query, delete_tree_query, get_block_for_url
+from .services.import_blocks import import_blocks
 from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task, \
     set_block_group_permissions_task, send_message_blocks_update
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
@@ -457,134 +459,6 @@ def build_values(rows):
     return ','.join(placeholders), params
 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@check_block_permissions({'block_id': ['edit_ac', 'edit', 'delete']})
-def import_json(request, block_id):
-    user = request.user
-    data = request.data.get('data', {})
-    root_id = request.data.get('root_id')
-
-    if not data or not root_id:
-        return Response({'detail': 'root_id and data are required'},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    parent_block = get_object_or_404(Block, id=block_id)
-
-    rows = [
-        {
-            'id': b['id'],
-            'title': b.get('title', ''),
-            'data': b.get('data', {}),
-            'parent_id': b.get('parent_id'),
-            'creator_id': user.id,
-            'updated_at': b.get('updated_at'),
-        }
-        for b in data.values()
-    ]
-
-    block_ids = [row['id'] for row in rows]
-    existing_ids = set(
-        Block.objects.filter(id__in=block_ids).values_list('id', flat=True)
-    )
-
-    if existing_ids:
-        allowed_ids = set(
-            BlockPermission.objects.filter(
-                block_id__in=existing_ids,
-                user=user,
-                permission__in=['edit', 'edit_ac', 'delete']
-            ).values_list('block_id', flat=True)
-        )
-        denied_ids = set(str(bid) for bid in existing_ids if bid not in allowed_ids)
-        if denied_ids:
-            return Response({'detail': 'Forbidden', 'blocks': list(denied_ids)},
-                            status=status.HTTP_403_FORBIDDEN)
-
-    values_sql, params = build_values(rows)
-
-    with transaction.atomic(), connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            INSERT INTO api_block (id, title, data, parent_id, creator_id, updated_at)
-            VALUES {values_sql}
-            ON CONFLICT (id) DO UPDATE SET
-                title       = EXCLUDED.title,
-                data        = EXCLUDED.data,
-                parent_id   = EXCLUDED.parent_id,
-                updated_at  = EXCLUDED.updated_at
-            WHERE (api_block.title, api_block.data, api_block.parent_id, api_block.updated_at)
-              IS DISTINCT FROM
-                  (EXCLUDED.title, EXCLUDED.data, EXCLUDED.parent_id, EXCLUDED.updated_at)
-            RETURNING id, xmax
-            """,
-            params,
-        )
-
-        inserted_ids = set()
-        updated_ids = set()
-        for row_id, xmax in cursor.fetchall():
-            if xmax == 0:
-                inserted_ids.add(str(row_id))
-            else:
-                updated_ids.add(str(row_id))
-
-        if not parent_block.is_my_child(root_id):
-            parent_block.add_child(Block.objects.get(id=root_id))
-
-        if inserted_ids:
-            parent_map = {
-                row['id']: row['parent_id'] for row in rows if str(row['id']) in inserted_ids
-            }
-            parent_ids = {pid for pid in parent_map.values() if pid}
-            perms = BlockPermission.objects.filter(block_id__in=parent_ids).select_related('user')
-            perms_by_parent = defaultdict(list)
-            for perm in perms:
-                perms_by_parent[str(perm.block_id)].append(perm)
-
-            new_permissions = []
-            subscribe_users = set()
-            for new_id, p_id in parent_map.items():
-                for perm in perms_by_parent.get(str(p_id), []):
-                    if perm.user_id == user.id:
-                        continue
-                    new_permissions.append(
-                        BlockPermission(block_id=new_id, user=perm.user, permission=perm.permission)
-                    )
-                    subscribe_users.add(perm.user_id)
-                new_permissions.append(
-                    BlockPermission(block_id=new_id, user=user, permission='delete')
-                )
-                subscribe_users.add(user.id)
-
-            if new_permissions:
-                BlockPermission.objects.bulk_create(new_permissions)
-
-    all_ids = {str(row['id']) for row in rows}
-    unchanged_ids = all_ids - inserted_ids - updated_ids
-
-    send_message_subscribe_user.delay(list(unchanged_ids), [user.id])
-
-    updated_blocks = {}
-    for id_block in (inserted_ids | updated_ids):
-        tmp = data[str(id_block)]
-        tmp['updated_at'] = int(datetime.datetime.fromisoformat(tmp['updated_at']).timestamp())
-        tmp['data'] = json.dumps(tmp['data'])
-        tmp['children'] = json.dumps(tmp['children'])
-        updated_blocks[str(id_block)] = tmp
-
-    sub_users = list(subscribe_users) if inserted_ids else [user.id]
-    celery_chain(
-        send_message_subscribe_user.si(list(inserted_ids), sub_users),
-        send_message_blocks_update.si(updated_blocks)
-    )()
-
-    return Response({
-        'created': inserted_ids,
-        'updated': updated_ids,
-        'unchanged': unchanged_ids
-    }, status=status.HTTP_201_CREATED)
-
 
 class CopyBlockView(APIView):
     """
@@ -830,3 +704,37 @@ def get_flat_map(user_id, block_ids):
         rows = cursor.fetchall()
     if rows:
         return load_empty_block_serializer(rows)
+
+
+class ImportBlocksView(APIView):
+    """
+    POST /api/blocks/import
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        ser = ImportBlocksSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        report = import_blocks(
+            ser.validated_data["blocks"],
+            default_creator=request.user if request.user and request.user.is_authenticated else None,
+            max_blocks=10_000,
+        )
+
+        return Response(
+            {
+                "created": report.created,
+                "updated": report.updated,
+                "unchanged": report.unchanged,
+                "permissions_upserted": report.permissions_upserted,
+                "links_upserted": report.links_upserted,
+                "errors": report.errors or [],
+                "problem_blocks":
+                    [
+                        {"block_id": p.block_id, "code": p.code, "message": p.message}
+                        for p in (report.problem_blocks or [])
+                    ],
+            },
+            status=status.HTTP_200_OK
+        )
