@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import UUID as _UUID
@@ -17,9 +18,34 @@ CHUNK = 1000
 DEFAULT_CREATOR_PERMISSION = "delete"
 MAX_BLOCKS_DEFAULT = 10_000
 
+
+def convert_blocks_to_import_payload(blocks: dict):
+    result_blocks = {}
+    remove_uuid = {}
+
+    for block_uuid, block in blocks.items():
+
+        data = block.get("data", {})
+        if data.get("view") == "link" and "source" in data:
+            remove_uuid.setdefault(block['parent_id'], []).append(
+                {'remove_child': block_uuid, 'link_uuid': data["source"]})
+            continue
+
+        new_block = deepcopy(block)
+        result_blocks[block_uuid] = new_block
+
+    for block_uuid, links in remove_uuid.items():
+        for data in links:
+            block = result_blocks[block_uuid]
+            remove_child = data['remove_child']
+            block['data']['childOrder'] = [uuid for uuid in block['data']['childOrder'] if uuid != remove_child]
+            block.setdefault('links', []).append(data['link_uuid'])
+
+    return {"blocks": list(result_blocks.values())}
+
+
 # TODO если id удаляется из childOrder родителя то нужно удалять этот блок
 # ========= Базовые структуры отчёта =========
-
 @dataclass
 class ProblemItem:
     block_id: str

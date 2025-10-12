@@ -11,6 +11,7 @@ UUID_PATTERN = re.compile(
     r"[0-9a-fA-F]{12}\b"
 )
 
+
 def replace_uuids(data: Any, mapping: Dict[str, str] = None) -> Any:
     """
     Рекурсивно проходит структуру данных (dict, list, str)
@@ -63,44 +64,139 @@ def replace_uuids_in_json(json_input: str | dict) -> dict:
 
 if __name__ == "__main__":
     data = {
-        "aa941a7d-64bc-46c6-a7d7-75dd84e11dbf": {
-            "id": "aa941a7d-64bc-46c6-a7d7-75dd84e11dbf",
+        "a3854cbd-39a2-489e-bac2-52406a9412e1": {
+            "id": "a3854cbd-39a2-489e-bac2-52406a9412e1",
             "title": "123",
             "parent_id": "25a6a794-0b26-4436-af04-307677003d50",
             "data": {
                 "childOrder": [
-                    "d1c9a218-61ac-44b5-b228-b6526b243707"
+                    "44a3c875-cbe7-4d74-a514-cc58c04cb9ec",
+                    "1b899206-3e43-4244-bd2f-a687f4dfb7b5"
                 ]
             },
-            "updated_at": "2025-10-12T08:30:03.714297+00:00",
+            "updated_at": "2025-10-12T16:28:09.622346+00:00",
             "children": [
-                "d1c9a218-61ac-44b5-b228-b6526b243707"
+                "44a3c875-cbe7-4d74-a514-cc58c04cb9ec",
+                "1b899206-3e43-4244-bd2f-a687f4dfb7b5"
             ]
         },
-        "d1c9a218-61ac-44b5-b228-b6526b243707": {
-            "id": "d1c9a218-61ac-44b5-b228-b6526b243707",
+        "44a3c875-cbe7-4d74-a514-cc58c04cb9ec": {
+            "id": "44a3c875-cbe7-4d74-a514-cc58c04cb9ec",
             "title": "1234",
-            "parent_id": "aa941a7d-64bc-46c6-a7d7-75dd84e11dbf",
+            "parent_id": "a3854cbd-39a2-489e-bac2-52406a9412e1",
             "data": {
                 "childOrder": [
-                    "5c4d2145-6cc8-4630-afb6-eac78ac1b227"
+                    "85df47a6-5ce8-4084-81e9-4f2345e1da1c",
+                    "013d0977-964f-4d97-aeb8-e1ebdfead607"
                 ]
             },
-            "updated_at": "2025-10-12T08:30:14.928695+00:00",
+            "updated_at": "2025-10-12T16:28:36.363023+00:00",
             "children": [
-                "5c4d2145-6cc8-4630-afb6-eac78ac1b227"
+                "85df47a6-5ce8-4084-81e9-4f2345e1da1c",
+                "013d0977-964f-4d97-aeb8-e1ebdfead607"
             ]
         },
-        "5c4d2145-6cc8-4630-afb6-eac78ac1b227": {
-            "id": "5c4d2145-6cc8-4630-afb6-eac78ac1b227",
+        "1b899206-3e43-4244-bd2f-a687f4dfb7b5": {
+            "id": "1b899206-3e43-4244-bd2f-a687f4dfb7b5",
+            "title": "13424",
+            "parent_id": "a3854cbd-39a2-489e-bac2-52406a9412e1",
+            "data": {
+                "childOrder": [
+                    "24c1ccee-b14c-4173-910d-db168bff4069",
+                    "5abcf24e-1289-40cd-96d9-7ca7741a5753"
+                ]
+            },
+            "updated_at": "2025-10-12T16:28:16.248982+00:00",
+            "children": [
+                "24c1ccee-b14c-4173-910d-db168bff4069",
+                "5abcf24e-1289-40cd-96d9-7ca7741a5753"
+            ]
+        },
+        "85df47a6-5ce8-4084-81e9-4f2345e1da1c": {
+            "id": "85df47a6-5ce8-4084-81e9-4f2345e1da1c",
             "title": None,
-            "parent_id": "d1c9a218-61ac-44b5-b228-b6526b243707",
+            "parent_id": "44a3c875-cbe7-4d74-a514-cc58c04cb9ec",
             "data": {
                 "view": "link",
-                "source": "f367ed54-bfbd-4507-bc5c-831ff409e635"
+                "source": "f367ed54-bfbd-4507-bc5c-831ff409e635",
+                "target": "f367ed54-bfbd-4507-bc5c-831ff409e635"
             },
-            "updated_at": "2025-10-12T08:30:14.921941+00:00",
+            "updated_at": "2025-10-12T15:32:54.139323+00:00",
+            "children": []
+        },
+        "013d0977-964f-4d97-aeb8-e1ebdfead607": {
+            "id": "013d0977-964f-4d97-aeb8-e1ebdfead607",
+            "title": "32",
+            "parent_id": "44a3c875-cbe7-4d74-a514-cc58c04cb9ec",
+            "data": {
+                "color": [
+                    200,
+                    90,
+                    70,
+                    0
+                ],
+                "childOrder": [
+                    "4915ca69-7421-4be5-97ac-967a46928c90"
+                ]
+            },
+            "updated_at": "2025-10-12T16:28:54.080793+00:00",
+            "children": [
+                "4915ca69-7421-4be5-97ac-967a46928c90"
+            ]
+        },
+        "24c1ccee-b14c-4173-910d-db168bff4069": {
+            "id": "24c1ccee-b14c-4173-910d-db168bff4069",
+            "title": "243",
+            "parent_id": "1b899206-3e43-4244-bd2f-a687f4dfb7b5",
+            "data": {
+                "color": [
+                    110,
+                    90,
+                    70,
+                    0
+                ],
+                "childOrder": [
+                    "6a7f1c61-2e64-47ee-8b3b-71f841dc0519"
+                ]
+            },
+            "updated_at": "2025-10-12T16:28:49.120743+00:00",
+            "children": [
+                "6a7f1c61-2e64-47ee-8b3b-71f841dc0519"
+            ]
+        },
+        "5abcf24e-1289-40cd-96d9-7ca7741a5753": {
+            "id": "5abcf24e-1289-40cd-96d9-7ca7741a5753",
+            "title": "4312",
+            "parent_id": "1b899206-3e43-4244-bd2f-a687f4dfb7b5",
+            "data": {
+                "childOrder": []
+            },
+            "updated_at": "2025-10-12T16:28:16.238101+00:00",
+            "children": []
+        },
+        "4915ca69-7421-4be5-97ac-967a46928c90": {
+            "id": "4915ca69-7421-4be5-97ac-967a46928c90",
+            "title": "55",
+            "parent_id": "013d0977-964f-4d97-aeb8-e1ebdfead607",
+            "data": {
+                "childOrder": [
+                    "dcd6f72e-e6df-4559-a037-744ab2ef7f81"
+                ]
+            },
+            "updated_at": "2025-10-12T16:28:42.943688+00:00",
+            "children": [
+                "dcd6f72e-e6df-4559-a037-744ab2ef7f81"
+            ]
+        },
+        "6a7f1c61-2e64-47ee-8b3b-71f841dc0519": {
+            "id": "6a7f1c61-2e64-47ee-8b3b-71f841dc0519",
+            "title": "543]",
+            "parent_id": "24c1ccee-b14c-4173-910d-db168bff4069",
+            "data": {
+                "childOrder": []
+            },
+            "updated_at": "2025-10-12T16:28:13.923577+00:00",
             "children": []
         }
     }
-    print(replace_uuids_in_json(data))
+    print(str(replace_uuids_in_json(data)).replace("'", '"'))

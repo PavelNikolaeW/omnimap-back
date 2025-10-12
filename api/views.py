@@ -32,7 +32,7 @@ from .serializers import (RegisterSerializer,
                           ImportBlocksSerializer)
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query, delete_tree_query, get_block_for_url
-from .services.import_blocks import import_blocks
+from .services.import_blocks import import_blocks, convert_blocks_to_import_payload
 from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task, \
     set_block_group_permissions_task, send_message_blocks_update
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
@@ -736,8 +736,11 @@ class ImportBlocksView(APIView):
 
     def post(self, request, *args, **kwargs):
         ser = ImportBlocksSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            payload = convert_blocks_to_import_payload(request.data)
+            ser = ImportBlocksSerializer(data=payload)
 
+        ser.is_valid(raise_exception=True)
         report = import_blocks(
             ser.validated_data["blocks"],
             default_creator=request.user if request.user and request.user.is_authenticated else None,
