@@ -447,25 +447,113 @@ def _apply_parent_updates(
 
 def _upsert_links(payload_blocks: List[dict], existing: Dict[str, Block], blocks_by_id: Dict[str, Block]) -> Tuple[
     int, Set[str]]:
-    link_pairs: List[Tuple[str, str]] = []
+    """Создаём дочерние link-блоки и связи BlockLink на основе поля links."""
+
+    def _existing_link_targets(parent_id: str) -> Dict[str, Block]:
+        return existing_links_map.setdefault(parent_id, {})
+
+    def _extract_target(data: Optional[dict]) -> Optional[str]:
+        if not isinstance(data, dict):
+            return None
+        target = data.get("target")
+        if target:
+            return str(target)
+        source = data.get("source")
+        if source:
+            return str(source)
+        return None
+
+    parent_ids: Set[str] = set()
     for item in payload_blocks:
-        sid = str(item["id"])
-        if sid not in existing:
+        links = item.get("links") or []
+        if links:
+            parent_ids.add(str(item["id"]))
+
+    if not parent_ids:
+        return 0, set()
+
+    # Карта существующих линк-блоков (parent_id -> target_id -> Block)
+    existing_link_blocks = Block.objects.filter(parent_id__in=parent_ids, data__view="link")
+    existing_links_map: Dict[str, Dict[str, Block]] = {}
+    for link_block in existing_link_blocks:
+        target_id = _extract_target(link_block.data)
+        if not target_id:
             continue
-        for t in item.get("links", []) or []:
-            tid = str(t)
-            if tid != sid and tid in blocks_by_id:
-                link_pairs.append((sid, tid))
+        existing_links_map.setdefault(str(link_block.parent_id), {})[target_id] = link_block
+
+    # Кэш разрешений родителя
+    parent_permissions: Dict[str, List[BlockPermission]] = {}
 
     inserted = 0
     touched: Set[str] = set()
-    if link_pairs:
-        uniq = {(s, t) for (s, t) in link_pairs if s != t}
-        for batch in chunked([BlockLink(source_id=s, target_id=t) for (s, t) in uniq], CHUNK):
-            BlockLink.objects.bulk_create(batch, ignore_conflicts=True)
-            inserted += len(batch)
-        for s, _ in uniq:
-            touched.add(s)
+    parents_to_update: Dict[str, Block] = {}
+
+    for item in payload_blocks:
+        parent_id = str(item["id"])
+        links = item.get("links") or []
+        if not links:
+            continue
+
+        parent_block = existing.get(parent_id) or blocks_by_id.get(parent_id)
+        if not parent_block:
+            continue
+
+        parent_links = _existing_link_targets(parent_id)
+
+        for target in links:
+            target_id = str(target)
+            if target_id == parent_id:
+                continue
+            if target_id not in blocks_by_id:
+                continue
+            if target_id in parent_links:
+                continue
+
+            link_block = Block.objects.create(
+                parent=parent_block,
+                creator_id=parent_block.creator_id,
+                data={
+                    "view": "link",
+                    "target": target_id,
+                    "source": target_id,
+                },
+            )
+
+            BlockLink.objects.get_or_create(source_id=target_id, target=link_block)
+
+            if parent_id not in parent_permissions:
+                parent_permissions[parent_id] = list(
+                    BlockPermission.objects.filter(block_id=parent_id)
+                )
+            perms_to_clone = parent_permissions[parent_id]
+            if perms_to_clone:
+                BlockPermission.objects.bulk_create(
+                    [
+                        BlockPermission(
+                            block=link_block,
+                            user_id=perm.user_id,
+                            permission=perm.permission,
+                        )
+                        for perm in perms_to_clone
+                    ],
+                    ignore_conflicts=True,
+                )
+
+            order = _child_order_get(parent_block.data or {})
+            link_block_id_str = str(link_block.id)
+            if link_block_id_str not in order:
+                order = order + [link_block_id_str]
+                parent_block.data = _child_order_set(parent_block.data or {}, order)
+                parents_to_update[parent_id] = parent_block
+
+            parent_links[target_id] = link_block
+            blocks_by_id[str(link_block.id)] = link_block
+
+            inserted += 1
+            touched.add(parent_id)
+
+    if parents_to_update:
+        Block.objects.bulk_update(list(parents_to_update.values()), ["data"])
 
     return inserted, touched
 
