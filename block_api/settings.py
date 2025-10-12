@@ -239,6 +239,9 @@ MAX_DEPTH_LOAD = 5
 # для такой загрузки отключена проверка прав) последний уровень отрежется.
 LINK_LOAD_DEPTH_LIMIT = 10
 
+# UUID служебного блока, который используется как источник для "битых" ссылок
+SERVICE_BLOCK_ID = os.environ.get('SERVICE_BLOCK_ID')
+
 
 
 RABBITMQ_USER = os.environ.get('RABBITMQ_USER')
