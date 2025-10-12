@@ -744,13 +744,13 @@ def import_blocks(
     # 3) parents + childOrder
     touched_parent, _moves = _apply_parent_updates(ids, by_id, blocks_by_id, existing, rep)
 
-    # 4) links
-    links_inserted, touched_links = _upsert_links(payload_blocks, existing, blocks_by_id)
-    rep.links_upserted += links_inserted
-
-    # 5) permissions
+    # 4) permissions
     perms_inserted, touched_perms = _upsert_permissions(payload_blocks, existing, default_creator, rep)
     rep.permissions_upserted += perms_inserted
+
+    # 5) links
+    links_inserted, touched_links = _upsert_links(payload_blocks, existing, blocks_by_id)
+    rep.links_upserted += links_inserted
 
     # 6) метрики updated / unchanged
     touched_ids = set().union(touched_core, touched_parent, touched_links, touched_perms)

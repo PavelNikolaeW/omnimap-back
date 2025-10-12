@@ -68,11 +68,11 @@ def send_message_blocks_update(self, block_ids):
     blocks = {
         str(r['id']): {
             'id': str(r['id']),
-            'title': r['title'],
+            'title': r['title'] if r['title'] else '',
             'data': json.dumps(r['data']),
             'parent_id': str(r['parent_id']) if r['parent_id'] else json.dumps(False),
             'updated_at': int(r['updated_at'].timestamp()),
-            'children': json.dumps([str(cid) for cid in (r['child_ids'] or [])])
+            'children': json.dumps([str(cid) for cid in r['child_ids'] if cid])
         }
         for r in rows
     }
