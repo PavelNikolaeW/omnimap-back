@@ -65,7 +65,7 @@ def delete_url(request, block_id, slug):
 
 @api_view(['GET'])
 def block_url(request, slug):
-    """Возвращает структуру блока и подписывает клиента на обновления по slug."""
+    """Возвращает дерево и подписывает клиента на обновления по slug."""
 
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
     source = link.source
@@ -77,4 +77,17 @@ def block_url(request, slug):
 
     data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
     send_message_subscribe_user(list(data.keys()), [-1])
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def load_tree(request):
+    source = request.data['tree']
+
+    with connection.cursor() as cursor:
+        cursor.execute(get_block_for_url, {'block_id': source, 'max_depth': settings.LINK_LOAD_DEPTH_LIMIT})
+        columns = [col[0] for col in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
     return Response(data, status=status.HTTP_200_OK)
