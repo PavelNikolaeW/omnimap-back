@@ -125,6 +125,7 @@ class ImportBlocksTests(TestCase):
         link_block = Block.objects.filter(parent_id=self.child.id, data__view='link').first()
         self.assertIsNotNone(link_block)
         self.assertEqual(link_block.data.get('target'), str(other.id))
+        self.assertEqual(link_block.data.get('source'), str(other.id))
 
         self.child.refresh_from_db()
         self.assertIn(str(link_block.id), self.child.data.get('childOrder', []))
@@ -187,6 +188,7 @@ class ImportBlocksTests(TestCase):
         link_block = Block.objects.filter(parent_id=self.child.id, data__view='link').first()
         self.assertIsNotNone(link_block)
         self.assertEqual(link_block.data.get('target'), str(target_id))
+        self.assertEqual(link_block.data.get('source'), str(target_id))
         self.assertTrue(
             BlockLink.objects.filter(source_id=target_id, target_id=link_block.id).exists(),
             "link to target created in the same payload must be created",
@@ -221,6 +223,77 @@ class ImportBlocksTests(TestCase):
 
         self.assertEqual(Block.objects.filter(parent_id=self.child.id, data__view='link').count(), 1)
         self.assertEqual(rep.links_upserted, 0)
+
+    def test_link_block_inherits_permissions_from_parent(self):
+        """Созданный линк-блок должен получить права родителя."""
+        other = Block.objects.create(id=uuid.uuid4(), title="Other", data={}, creator=self.owner)
+        BlockPermission.objects.create(block=self.child, user=self.u1, permission="view")
+        BlockPermission.objects.create(block=self.child, user=self.u2, permission="edit")
+
+        payload = [{
+            "id": str(self.child.id),
+            "title": "Child",
+            "data": {},
+            "parent_id": str(self.parentA.id),
+            "links": [str(other.id)],
+            "permissions": {},
+        }]
+
+        import_blocks(payload, default_creator=self.owner)
+
+        link_block = Block.objects.filter(parent_id=self.child.id, data__view="link").first()
+        self.assertIsNotNone(link_block)
+
+        self.assertTrue(
+            BlockPermission.objects.filter(block=link_block, user=self.u1, permission="view").exists()
+        )
+        self.assertTrue(
+            BlockPermission.objects.filter(block=link_block, user=self.u2, permission="edit").exists()
+        )
+
+    def test_links_ignore_self_target(self):
+        """Ссылки на самого себя игнорируются."""
+        payload = [{
+            "id": str(self.child.id),
+            "title": "Child",
+            "data": {},
+            "parent_id": str(self.parentA.id),
+            "links": [str(self.child.id)],
+            "permissions": {},
+        }]
+
+        rep = import_blocks(payload, default_creator=self.owner)
+
+        self.assertEqual(Block.objects.filter(parent=self.child, data__view="link").count(), 0)
+        self.assertEqual(rep.links_upserted, 0)
+
+    def test_links_collapse_duplicates_from_payload(self):
+        """Повторяющиеся target в списке links создают только одну ссылку."""
+        other = Block.objects.create(id=uuid.uuid4(), title="Other", data={}, creator=self.owner)
+        payload = [{
+            "id": str(self.child.id),
+            "title": "Child",
+            "data": {},
+            "parent_id": str(self.parentA.id),
+            "links": [str(other.id), str(other.id)],
+            "permissions": {},
+        }]
+
+        rep = import_blocks(payload, default_creator=self.owner)
+
+        link_blocks = Block.objects.filter(parent=self.child, data__view="link")
+        self.assertEqual(link_blocks.count(), 1)
+        link_block = link_blocks.first()
+
+        self.child.refresh_from_db()
+        child_order = (self.child.data or {}).get("childOrder", [])
+        self.assertEqual(child_order.count(str(link_block.id)), 1)
+
+        self.assertEqual(
+            BlockLink.objects.filter(source_id=other.id, target_id=link_block.id).count(),
+            1,
+        )
+        self.assertEqual(rep.links_upserted, 1)
 
     # --- Права ---
 
