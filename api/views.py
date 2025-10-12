@@ -1,3 +1,5 @@
+"""Набор REST-эндпоинтов для работы с блоками, деревьями и правами доступа."""
+
 import datetime
 import json
 import logging
@@ -160,9 +162,13 @@ class RegisterView(APIView):
 
 
 class AccessBlockView(APIView):
+    """Управляет правами доступа к блоку для отдельных пользователей и групп."""
+
     permission_classes = (IsAuthenticated,)
 
     def get(self, request, block_id):
+        """Возвращает все права доступа, выданные для указанного блока."""
+
         block = get_object_or_404(Block, pk=block_id)
         block_permissions = BlockPermission.objects.filter(block__id=block_id).select_related('user')
         if not block_permissions.exists():
@@ -170,6 +176,8 @@ class AccessBlockView(APIView):
         return Response(access_serializer(block_permissions))
 
     def post(self, request, block_id):
+        """Запускает Celery-задачу по изменению прав доступа пользователя или группы."""
+
         initiator = request.user
         permission_type = request.data.get('permission_type')
         target_username = request.data.get('target_username')
@@ -292,6 +300,8 @@ def load_empty_blocks(request, user_id):
 @permission_classes([IsAuthenticated])
 @check_block_permissions({'parent_id': ['edit_ac', 'edit', 'delete']})
 def create_block(request, parent_id):
+    """Создаёт дочерний блок и наследует права доступа родителя."""
+
     user = request.user
     parent_block = get_object_or_404(Block, id=parent_id)
     data = request.data.get('data', {})
@@ -328,6 +338,8 @@ def create_block(request, parent_id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_new_tree(request):
+    """Создаёт корневой блок (новое дерево) для текущего пользователя."""
+
     title = request.data.get('title', "")
     user = request.user
     block = Block.objects.create(creator=user, title=title, data={})
@@ -347,6 +359,8 @@ def create_new_tree(request):
     'parent_id': ['edit_ac', 'edit', 'delete'],
     'source_id': ['view', 'edit_ac', 'edit', 'delete']})
 def create_link_on_block(request, parent_id, source_id):
+    """Создаёт блок-ссылку на существующий блок и наследует права доступа."""
+
     user = request.user
 
     blocks = {b.id: b for b in Block.objects.filter(id__in=[parent_id, source_id])}
@@ -401,6 +415,8 @@ def create_link_on_block(request, parent_id, source_id):
     'new_parent_id': ['edit_ac', 'edit', 'delete'],
     'child_id': ['view', 'edit_ac', 'edit', 'delete']})
 def move_block(request, old_parent_id, new_parent_id, child_id):
+    """Перемещает блок между родителями и обновляет порядок детей."""
+
     child = get_object_or_404(Block, id=child_id)
 
     if 'childOrder' not in request.data:
@@ -435,6 +451,8 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
 @permission_classes([IsAuthenticated])
 @check_block_permissions({'block_id': ['edit_ac', 'edit', 'delete'], })
 def edit_block(request, block_id):
+    """Обновляет заголовок и данные блока, исключая системные поля."""
+
     block = get_object_or_404(Block, id=block_id)
     block.title = request.data.get('title', block.title)
     data = request.data.get('data', {})
@@ -448,6 +466,8 @@ def edit_block(request, block_id):
 
 
 def build_values(rows):
+    """Формирует SQL-плейсхолдеры и параметры для массовой вставки блоков."""
+
     placeholders = []
     params = []
     for row in rows:
@@ -693,6 +713,8 @@ class CopyBlockView(APIView):
 
 
 def get_flat_map(user_id, block_ids):
+    """Возвращает плоское представление блоков, доступных пользователю."""
+
     block_ids = [uuid.UUID(bid) for bid in block_ids]
 
     with connection.cursor() as cursor:

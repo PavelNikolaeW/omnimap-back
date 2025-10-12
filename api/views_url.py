@@ -1,6 +1,8 @@
+"""Эндпоинты для управления общими ссылками на блоки."""
+
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
-from rest_framework import status, generics
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -16,6 +18,8 @@ from .utils.decorators import check_block_permissions
 @permission_classes([IsAuthenticated])
 @check_block_permissions({'block_id': ['delete'], })
 def create_url(request, block_id):
+    """Создаёт публичный slug для блока, если он ещё не занят."""
+
     block = get_object_or_404(Block, id=block_id)
     slug = request.data.get('slug')
     if not BlockUrlLinkModel.objects.filter(slug=slug).exists():
@@ -41,6 +45,8 @@ def check_slug(request, slug):
 @permission_classes([IsAuthenticated, ])
 @check_block_permissions({'block_id': ALLOWED_SHOW_PERMISSIONS, })
 def get_urls(request, block_id):
+    """Возвращает все slug'и, привязанные к указанному блоку."""
+
     links = BlockUrlLinkModel.objects.filter(source_id=block_id)
     return Response(links_serializer(links), status=status.HTTP_200_OK)
 
@@ -49,6 +55,8 @@ def get_urls(request, block_id):
 @permission_classes([IsAuthenticated, ])
 @check_block_permissions({'block_id': ['delete']})
 def delete_url(request, block_id, slug):
+    """Удаляет slug, если запрос инициировал пользователь с правом удаления."""
+
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
     print(link)
     link.delete()
@@ -57,6 +65,8 @@ def delete_url(request, block_id, slug):
 
 @api_view(['GET'])
 def block_url(request, slug):
+    """Возвращает структуру блока и подписывает клиента на обновления по slug."""
+
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
     source = link.source
 
