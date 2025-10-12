@@ -391,3 +391,19 @@ class ImportBlocksTests(TestCase):
 
         orderA = (self.parentA.data or {}).get("childOrder", [])
         self.assertNotIn(str(self.child.id), orderA)
+
+    def test_childOrder_remove_unused_child_deletes_block(self):
+        """Удалённый из childOrder блок удаляется, если больше нигде не используется."""
+        payload = [{
+            "id": str(self.parentA.id),
+            "title": self.parentA.title,
+            "data": {"childOrder": []},
+            "permissions": {},
+        }]
+
+        import_blocks(payload, default_creator=self.owner)
+
+        self.assertFalse(Block.objects.filter(id=self.child.id).exists())
+        self.parentA.refresh_from_db()
+        orderA = (self.parentA.data or {}).get("childOrder", [])
+        self.assertEqual(orderA, [])

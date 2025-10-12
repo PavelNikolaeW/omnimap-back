@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import UUID as _UUID
@@ -46,6 +45,7 @@ def convert_blocks_to_import_payload(blocks: dict):
 
 # TODO если id удаляется из childOrder родителя то нужно удалять этот блок
 # ========= Базовые структуры отчёта =========
+
 @dataclass
 class ProblemItem:
     block_id: str
@@ -261,10 +261,12 @@ def _desired_children_by_parent(by_id: Dict[str, dict]) -> Dict[str, Set[str]]:
     """Карта: parent_id -> множество желаемых child_ids из data.childOrder родителя (по пэйлоаду)."""
     out: Dict[str, Set[str]] = {}
     for sid, it in by_id.items():
+        data = it.get("data") or {}
+        if "childOrder" not in data:
+            continue
         pid = str(sid)  # сам объект — это родитель
-        order = _child_order_get((it.get("data") or {}))
-        if order:
-            out[pid] = set(order)
+        order = _child_order_get(data)
+        out[pid] = set(order)
     return out
 
 
@@ -327,6 +329,9 @@ def _apply_parent_updates(
 
     # ---- (B) Примирение по childOrder родителя (childOrder — источник истины) ----
     desired_map = _desired_children_by_parent(by_id)  # parent_id -> set(child_ids)
+    desired_children_all: Set[str] = set()
+    for s in desired_map.values():
+        desired_children_all.update(s)
 
     if desired_map:
         parent_ids = set(desired_map.keys())
@@ -342,16 +347,18 @@ def _apply_parent_updates(
         # 2) Текущее состояние детей у этих родителей
         db_rows = Block.objects.filter(parent_id__in=_as_uuid_set(parent_ids)).values_list("id", "parent_id")
         current_map: Dict[str, Set[str]] = {}
+        current_children_all: Set[str] = set()
         for cid, pid in db_rows:
-            current_map.setdefault(str(pid), set()).add(str(cid))
+            sid = str(cid)
+            pid_str = str(pid)
+            current_map.setdefault(pid_str, set()).add(sid)
+            current_children_all.add(sid)
 
         # 3) Массово подгружаем всех детей, встречающихся в desired_map
-        desired_children_all: Set[str] = set()
-        for s in desired_map.values():
-            desired_children_all.update(s)
-
-        children_map: Dict[str, Block] = {cid: blocks_by_id[cid] for cid in desired_children_all if cid in blocks_by_id}
-        missing_child_ids = desired_children_all - set(children_map.keys())
+        detached_ids_for_cleanup: Set[str] = set()
+        children_ids_needed = desired_children_all | current_children_all
+        children_map: Dict[str, Block] = {cid: blocks_by_id[cid] for cid in children_ids_needed if cid in blocks_by_id}
+        missing_child_ids = children_ids_needed - set(children_map.keys())
         if missing_child_ids:
             extra_children = Block.objects.in_bulk(_as_uuid_set(missing_child_ids), field_name="id")
             children_map.update({str(k): v for k, v in extra_children.items()})
@@ -374,6 +381,7 @@ def _apply_parent_updates(
                 to_detach.append(ch)
                 parent_moves.append((pid, None, cid))
                 touched_ids.add(cid)
+                detached_ids_for_cleanup.add(cid)
 
         # ATTACH: есть в desired, но ещё не прикреплены к этому родителю
         for pid, desired_children in desired_map.items():
@@ -423,6 +431,27 @@ def _apply_parent_updates(
             Block.objects.bulk_update(to_detach, ["parent"])
         if to_attach:
             Block.objects.bulk_update(to_attach, ["parent"])
+
+        if detached_ids_for_cleanup:
+            payload_ids_set = set(ids)
+            ids_to_consider = [
+                cid for cid in detached_ids_for_cleanup
+                if cid not in desired_children_all and cid not in payload_ids_set
+            ]
+            if ids_to_consider:
+                uuid_candidates = _as_uuid_set(ids_to_consider)
+                if uuid_candidates:
+                    used_as_parent_ids = {
+                        str(pid) for pid in Block.objects.filter(parent_id__in=uuid_candidates).values_list("parent_id", flat=True)
+                    }
+                    deletable_blocks = Block.objects.filter(id__in=uuid_candidates, parent__isnull=True)
+                    for block in deletable_blocks:
+                        sid = str(block.id)
+                        if sid in used_as_parent_ids:
+                            continue
+                        block.delete()
+                        blocks_by_id.pop(sid, None)
+                        touched_ids.add(sid)
 
     # --- (C) childOrder sync у задетых родителей ---
     parent_ids_to_fix: Set[str] = set()
