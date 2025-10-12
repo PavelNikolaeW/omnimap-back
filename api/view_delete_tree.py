@@ -51,7 +51,7 @@ def _delete_single_block(block, source):
 
 
 def _delete_tree(block, user_id):
-    """Удаление дерева блоков через SQL-запрос"""
+    """Удаление дерева блоков"""
 
     with connection.cursor() as cursor:
         cursor.execute(delete_tree_query, {'block_id': block.id, 'user_id': user_id})
@@ -78,8 +78,8 @@ def _delete_tree(block, user_id):
             send_message_block_update.delay(str(parent_block.id), parent_data)
 
         # Удаление всех связанных блоков и связей
-        send_message_unsubscribe_user.delay(block_ids)
         Block.objects.filter(id__in=block_ids).delete()
         BlockLink.objects.filter(target__id__in=block_ids).delete()
+        send_message_unsubscribe_user.delay(block_ids)
 
     return Response({'parent': parent_data}, status=status.HTTP_200_OK)
