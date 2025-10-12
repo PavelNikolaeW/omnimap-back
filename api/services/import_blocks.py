@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import UUID as _UUID
@@ -43,7 +44,6 @@ def convert_blocks_to_import_payload(blocks: dict):
     return {"blocks": list(result_blocks.values())}
 
 
-# TODO если id удаляется из childOrder родителя то нужно удалять этот блок
 # ========= Базовые структуры отчёта =========
 
 @dataclass
@@ -442,7 +442,8 @@ def _apply_parent_updates(
                 uuid_candidates = _as_uuid_set(ids_to_consider)
                 if uuid_candidates:
                     used_as_parent_ids = {
-                        str(pid) for pid in Block.objects.filter(parent_id__in=uuid_candidates).values_list("parent_id", flat=True)
+                        str(pid) for pid in
+                        Block.objects.filter(parent_id__in=uuid_candidates).values_list("parent_id", flat=True)
                     }
                     deletable_blocks = Block.objects.filter(id__in=uuid_candidates, parent__isnull=True)
                     for block in deletable_blocks:
