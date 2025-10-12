@@ -131,6 +131,58 @@ class ImportBlocksTests(TestCase):
         # (т.к. touched_ids учитывает изменения ссылок).
         self.assertEqual(rep.unchanged, 0)
 
+    def test_links_skip_missing_target(self):
+        """Ссылка на несуществующий блок игнорируется и не создаётся."""
+        missing_id = uuid.uuid4()
+        payload = [{
+            "id": str(self.child.id),
+            "title": "Child",
+            "data": {},
+            "parent_id": str(self.parentA.id),
+            "links": [str(missing_id)],
+            "permissions": {},
+        }]
+
+        rep = import_blocks(payload, default_creator=self.owner)
+
+        self.assertFalse(
+            BlockLink.objects.filter(source_id=self.child.id, target_id=missing_id).exists(),
+            "link to missing target must not be created",
+        )
+        self.assertEqual(rep.links_upserted, 0)
+        self.assertFalse(rep.problem_blocks, f"unexpected problems: {rep.problem_blocks}")
+
+    def test_links_to_block_from_payload_created(self):
+        """Если target отсутствует в БД, но присутствует в payload, то ссылка создаётся."""
+        target_id = uuid.uuid4()
+        payload = [
+            {
+                "id": str(self.child.id),
+                "title": "Child",
+                "data": {},
+                "parent_id": str(self.parentA.id),
+                "links": [str(target_id)],
+                "permissions": {},
+            },
+            {
+                "id": str(target_id),
+                "title": "New target",
+                "data": {},
+                "parent_id": None,
+                "links": [],
+                "permissions": {},
+            },
+        ]
+
+        rep = import_blocks(payload, default_creator=self.owner)
+
+        self.assertTrue(Block.objects.filter(id=target_id).exists())
+        self.assertTrue(
+            BlockLink.objects.filter(source_id=self.child.id, target_id=target_id).exists(),
+            "link to target created in the same payload must be created",
+        )
+        self.assertGreaterEqual(rep.links_upserted, 1)
+
     # --- Права ---
 
     def test_default_creator_permission_granted_for_new_block(self):
