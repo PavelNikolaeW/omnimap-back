@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .view_delete_tree import delete_tree, force_delete_tree
+from .view_delete_tree import delete_tree
 from .views import (RegisterView, load_tress, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
                     TaskStatusView, create_new_tree, ImportBlocksView)
@@ -17,7 +17,6 @@ urlpatterns = [
     path('load-tree/', load_tree, name='load-tree'),
     path('import/', ImportBlocksView.as_view(), name='import-json'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
-    path('delete-tree-force/<uuid:tree_id>/', force_delete_tree, name='force-delete-tree'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
     path('new-tree/', create_new_tree, name='new-tree'),
     path('create-link-block/<uuid:parent_id>/<uuid:source_id>/', create_link_on_block, name='create-link-block'),

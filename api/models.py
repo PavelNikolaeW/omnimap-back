@@ -109,7 +109,7 @@ class Group(models.Model):
         return f"{self.name} (owner: {self.owner.username})"
 
 
-# Разрешения для отдельного пользователя (оставляем как есть)
+# Разрешения для отдельного пользователя
 class BlockPermission(models.Model):
     id = models.BigAutoField(primary_key=True)
     block = models.ForeignKey('Block', on_delete=models.CASCADE, related_name='permissions')

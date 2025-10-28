@@ -24,20 +24,18 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import api_view, permission_classes
 from django.utils.timezone import now
 from django.conf import settings
-from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, BlockUrlLinkModel, \
+from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS, PERMISSION_CHOICES, \
     Group
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
-                          load_empty_block_serializer, access_serializer, links_serializer, block_link_serializer,
-                          ImportBlocksSerializer)
+                          load_empty_block_serializer, access_serializer, ImportBlocksSerializer)
 from api.utils.query import get_all_trees_query, \
-    load_empty_blocks_query, delete_tree_query, get_block_for_url
+    load_empty_blocks_query
 from .services.import_blocks import import_blocks, convert_blocks_to_import_payload
-from .tasks import send_message_block_update, send_message_subscribe_user, set_block_permissions_task, \
-    set_block_group_permissions_task, send_message_blocks_update
+from .tasks import send_message_block_update, send_message_subscribe_user, \
+    set_block_group_permissions_task, set_block_permissions_task, send_message_blocks_update
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
-from celery import chain as celery_chain
 
 PermissionData = namedtuple('PermissionData', ['user', 'permission'])
 
