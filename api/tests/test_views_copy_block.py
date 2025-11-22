@@ -154,9 +154,9 @@ def test_copy_multiple_ids(auth_client, extended_block_hierarchy, block_hierarch
     assert src_ids != copied_hierarchy[str(dest.id)]['children']
     src_data = get_flat_map(user.id, src_ids)
     copied_data = get_flat_map(user.id, copied_hierarchy[str(dest.id)]['children'])
-    pprint(src_data)
-    print('WWWWWWWwwwWWWWWWWWWWWWW')
-    pprint(copied_data)
+    # pprint(src_data)
+    # print('WWWWWWWwwwWWWWWWWWWWWWW')
+    # pprint(copied_data)
 
 
 @pytest.mark.django_db

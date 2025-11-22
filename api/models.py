@@ -3,6 +3,7 @@ from pprint import pprint
 import uuid
 from django.contrib.auth import get_user_model
 from django.db import models
+from psqlextra.manager import PostgresManager
 from simple_history.models import HistoricalRecords
 from api.utils.calc_custom_grid import custom_grid_update
 from django.utils.text import slugify
@@ -34,6 +35,13 @@ class Block(models.Model):
 
     history = HistoricalRecords()
 
+    def __init__(self, *args, **kwargs):
+        kwarg = {}
+        for field, value in kwargs.items():
+            if field in ['id', 'parent', 'creator', 'title', 'data', 'parent_id']:
+                kwarg[field] = value
+        super().__init__(*args, **kwarg)
+
     class Meta:
         indexes = [
             models.Index(fields=['parent']),
@@ -46,7 +54,6 @@ class Block(models.Model):
     def add_child(self, child):
         self.children.add(child)
         self.data.setdefault('childOrder', []).append(str(child.id))
-        print('self.id=', self.id, child)
         if custom_grid := self.data.get('customGrid'):
             custom_grid_update(custom_grid, str(child.id))
         self.save()
@@ -111,6 +118,8 @@ class Group(models.Model):
 
 # Разрешения для отдельного пользователя
 class BlockPermission(models.Model):
+    objects = PostgresManager()
+
     id = models.BigAutoField(primary_key=True)
     block = models.ForeignKey('Block', on_delete=models.CASCADE, related_name='permissions')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='block_permissions')

@@ -9,7 +9,6 @@ from .models import Block, BlockPermission, BlockLink
 from .serializers import get_object_for_block
 from api.tasks import send_message_block_update
 from .utils.query import restore_deleted_branch, delete_tree_query
-from .view_delete_tree import _delete_tree
 
 
 class BlockHistoryListView(APIView):

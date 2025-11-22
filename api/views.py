@@ -6,6 +6,7 @@ import logging
 import uuid
 from collections import defaultdict, namedtuple
 from itertools import chain
+from pprint import pprint
 
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
@@ -28,12 +29,11 @@ from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS,
     Group
 from .serializers import (RegisterSerializer,
                           CustomTokenObtainPairSerializer, BlockSerializer, get_object_for_block, get_forest_serializer,
-                          load_empty_block_serializer, access_serializer, ImportBlocksSerializer)
+                          load_empty_block_serializer, access_serializer)
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query
-from .services.import_blocks import import_blocks, convert_blocks_to_import_payload
 from .tasks import send_message_block_update, send_message_subscribe_user, \
-    set_block_group_permissions_task, set_block_permissions_task, send_message_blocks_update
+    set_block_group_permissions_task, set_block_permissions_task, import_blocks_task
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
 
@@ -306,7 +306,7 @@ def create_block(request, parent_id):
     if 'childOrder' not in data.keys():
         data['childOrder'] = []
     new_block = Block.objects.create(
-        creator_id=user.id,
+        creator=user,
         title=request.data.get('title', ""),
         data=data
     )
@@ -475,7 +475,6 @@ def build_values(rows):
             row['parent_id'], row['creator_id'], row['updated_at']
         ])
     return ','.join(placeholders), params
-
 
 
 class CopyBlockView(APIView):
@@ -732,34 +731,12 @@ class ImportBlocksView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, *args, **kwargs):
-        ser = ImportBlocksSerializer(data=request.data)
-        if not ser.is_valid():
-            payload = convert_blocks_to_import_payload(request.data)
-            ser = ImportBlocksSerializer(data=payload)
+    def post(self, request):
+        data = request.data
+        payload = data.get('payload', {})
+        user = request.user
+        default_perms = request.data.get('default_perms', [{'user_id': user.id, 'permission': 'delete'}])
+        task = import_blocks_task.delay(payload=payload, user_id=user.id, default_perms=default_perms)
+        return Response(data={"task_id": task.id},
+                        status=status.HTTP_202_ACCEPTED)
 
-        ser.is_valid(raise_exception=True)
-        report = import_blocks(
-            ser.validated_data["blocks"],
-            default_creator=request.user if request.user and request.user.is_authenticated else None,
-            max_blocks=10_000,
-        )
-        if report.updated > 0:
-            report.updated_ids.append(ser.validated_data["blocks"][0]['parent_id'])
-            send_message_blocks_update.delay(report.updated_ids)
-        return Response(
-            {
-                "created": report.created,
-                "updated": report.updated,
-                "unchanged": report.unchanged,
-                "permissions_upserted": report.permissions_upserted,
-                "links_upserted": report.links_upserted,
-                "errors": report.errors or [],
-                "problem_blocks":
-                    [
-                        {"block_id": p.block_id, "code": p.code, "message": p.message}
-                        for p in (report.problem_blocks or [])
-                    ],
-            },
-            status=status.HTTP_200_OK
-        )

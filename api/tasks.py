@@ -1,6 +1,8 @@
 from datetime import datetime
+from pprint import pprint
 
 from celery import shared_task
+from django.contrib.auth import get_user_model
 from django.db.models import Q
 from kombu import Connection, Exchange, Producer
 from django.conf import settings
@@ -9,6 +11,7 @@ from django.db import connection
 
 from api.models import Group, BlockLink, Block
 from api.serializers import get_object_for_block
+from api.services.import_blocks import import_blocks
 from api.utils.query import recursive_set_block_access_query, recursive_set_block_group_access_query
 from django.contrib.postgres.aggregates import ArrayAgg
 
@@ -20,7 +23,7 @@ ROUTING_KEY = settings.RABBITMQ_ROUTING_KEY
 
 # Создаем Exchange и Producer
 exchange = Exchange(EXCHANGE_NAME, type='direct')
-
+User = get_user_model()
 
 # celery -A block_api worker --loglevel=info
 # TODO очищать redis от id старых задач
@@ -56,11 +59,10 @@ def send_message_block_update(self, block_uuid, block_data):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_message_blocks_update(self, block_ids):
-    print(block_ids, len(block_ids))
+def send_message_blocks_update(self, block_uuids):
     rows = (
         Block.objects
-        .filter(id__in=block_ids)
+        .filter(id__in=block_uuids)
         .annotate(child_ids=ArrayAgg('children__id', distinct=True))
         .values('id', 'title', 'data', 'parent_id', 'updated_at', 'child_ids')
     )
@@ -244,3 +246,36 @@ def set_block_group_permissions_task(self, initiator_id, group_id, block_id, new
     except Exception as e:
         print(f"Error in set_block_group_permissions_task: {e}")
         self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
+def import_blocks_task(self, payload, user_id, default_perms):
+    try:
+        user = User.objects.get(id=user_id)
+        rep = import_blocks(payload_blocks=payload, user=user, default_permissions=default_perms, task=self)
+        if not rep:
+            return False
+
+        blocks_update = set()
+        blocks_update.update(rep.created, rep.updated)
+
+        if blocks_update:
+            send_message_blocks_update.delay(block_uuids=list(blocks_update))
+        if rep.deleted:
+            send_message_unsubscribe_user.delay(block_uuids=[str(bid) for bid in rep.deleted])
+        if rep.permissions_upserted:
+            for user_id, perm_bids in rep.permissions_upserted.items():
+                for permission, bids in perm_bids.items():
+                    send_message_access_update.delay(
+                        block_uuids=bids,
+                        user_id=user_id,
+                        permission=permission,
+                        start_block_ids=[],
+                    )
+
+
+    #     todo тут же вызываем таски и подписываем пользователей на блоки
+    except Exception as e:
+        print(f"Error in import_blocks_task: {e}")
+        self.retry(exc=e, countdown=5)
+        self.update_state(status='ERROR', meta={'result': e})
