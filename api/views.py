@@ -229,7 +229,7 @@ class AccessBlockView(APIView):
 @api_view(["GET"])
 @determine_user_id
 @subscribe_to_blocks(send_message_subscribe_user)
-def load_tress(request, user_id):
+def load_trees(request, user_id):
     """
     Возвращает все корневые блоки (parent IS NULL) для текущего пользователя
     и все их потомки, но суммарно ограничивает кол-во строк LIMIT.
@@ -733,7 +733,9 @@ class ImportBlocksView(APIView):
 
     def post(self, request):
         data = request.data
-        payload = data.get('payload', {})
+        payload = data.get('payload', [])
+        if not payload and isinstance(data, dict):
+            payload = [item for item in data.values()]
         user = request.user
         default_perms = request.data.get('default_perms', [{'user_id': user.id, 'permission': 'delete'}])
         task = import_blocks_task.delay(payload=payload, user_id=user.id, default_perms=default_perms)

@@ -24,7 +24,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         # Добавляем ID пользователя к данным токена
         token['user_id'] = user.id
-
+        token['is_staff'] = user.is_staff
         return token
 
     def validate(self, attrs):
@@ -32,7 +32,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         # Добавляем ID пользователя в ответ
         data['user_id'] = self.user.id
-
+        data['is_staff'] = self.user.is_staff
         return data
 
 

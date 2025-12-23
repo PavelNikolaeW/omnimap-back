@@ -9,7 +9,7 @@ from psqlextra.types import ConflictAction
 from api.models import Block, BlockPermission, CHANGE_PERMISSION_CHOICES, BlockLink
 
 DEFAULT_CREATOR_PERMISSION = "delete"
-
+ALLOWED_FIELDS = {"id", "title", "data", "parent_id", "creator", "permissions", "children", "updated_at", 'size', 'contentPosition', 'color', 'contentEl', 'groupSizes', 'grid', 'childrenPositions'}
 
 # ---------- Модели отчёта / проблем ------------------------------------------
 
@@ -150,7 +150,6 @@ def _collect_payload(payload_blocks: Iterable[dict], rep: ImportReport) -> Tuple
     """
     payload_by_id: Dict[_UUID, dict] = {}
     parents_id = set()
-
     for raw in payload_blocks:
         raw_id = raw.get("id")
         bid = _to_uuid(raw_id)
@@ -379,7 +378,6 @@ def _set_update_blocks(update_ids: Set[_UUID], ctx: ImportContext, create_ids, d
     payload_keys = set(payload_by_id)
 
     update_blocks: List[Block] = []
-    allowed_fields = {"id", "title", "data", "parent_id", "creator", "permissions"}
 
     for bid in update_ids:
         payload = payload_by_id.get(bid)
@@ -432,7 +430,7 @@ def _set_update_blocks(update_ids: Set[_UUID], ctx: ImportContext, create_ids, d
             new_block["parent_id"] = parent_uuid
 
         # --- лишние поля ---
-        extra = set(new_block) - allowed_fields
+        extra = set(new_block) - ALLOWED_FIELDS
         if extra:
             rep_add(str(bid), "not_valid_field")
 
@@ -538,8 +536,6 @@ def _set_create_blocks(create_ids: Set[_UUID], ctx: ImportContext, default_perms
     child_parent = ctx.child_parent
     links_create = ctx.links_create
 
-    allowed_fields = {"id", "title", "data", "parent_id", "creator", "permissions"}
-
     new_blocks: List[Block] = []
 
     for bid in create_ids:
@@ -565,7 +561,7 @@ def _set_create_blocks(create_ids: Set[_UUID], ctx: ImportContext, default_perms
         add_perms(bid, perms)
 
         # --- лишние поля ---
-        extra = set(new_block) - allowed_fields
+        extra = set(new_block) - ALLOWED_FIELDS
         if extra:
             rep_add(str(bid), "not_valid_field")
 

@@ -7,7 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
-from .models import Block, ALLOWED_SHOW_PERMISSIONS, BlockUrlLinkModel
+from .models import Block, ALLOWED_SHOW_PERMISSIONS, BlockUrlLinkModel, BlockPermission
 from .serializers import links_serializer, block_link_serializer
 from api.utils.query import get_block_for_url
 from .tasks import send_message_subscribe_user
@@ -46,7 +46,6 @@ def check_slug(request, slug):
 @check_block_permissions({'block_id': ALLOWED_SHOW_PERMISSIONS, })
 def get_urls(request, block_id):
     """Возвращает все slug'и, привязанные к указанному блоку."""
-
     links = BlockUrlLinkModel.objects.filter(source_id=block_id)
     return Response(links_serializer(links), status=status.HTTP_200_OK)
 
@@ -56,9 +55,7 @@ def get_urls(request, block_id):
 @check_block_permissions({'block_id': ['delete']})
 def delete_url(request, block_id, slug):
     """Удаляет slug, если запрос инициировал пользователь с правом удаления."""
-
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
-    print(link)
     link.delete()
     return Response({'detail': 'Deleted successfully'}, status=status.HTTP_200_OK)
 
@@ -66,7 +63,6 @@ def delete_url(request, block_id, slug):
 @api_view(['GET'])
 def block_url(request, slug):
     """Возвращает дерево и подписывает клиента на обновления по slug."""
-
     link = get_object_or_404(BlockUrlLinkModel, slug=slug)
     source = link.source
 
@@ -83,6 +79,24 @@ def block_url(request, slug):
 @api_view(['GET'])
 def load_tree(request):
     source = request.data['tree']
+    if not BlockUrlLinkModel.objects.filter(source=source).exists():
+        return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+    with connection.cursor() as cursor:
+        cursor.execute(get_block_for_url, {'block_id': source, 'max_depth': settings.LINK_LOAD_DEPTH_LIMIT})
+        columns = [col[0] for col in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def load_nodes(request):
+    source = request.data['tree']
+    if not BlockPermission.objects.filter(block_id=source, user=request.user).exists():
+        return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
     with connection.cursor() as cursor:
         cursor.execute(get_block_for_url, {'block_id': source, 'max_depth': settings.LINK_LOAD_DEPTH_LIMIT})

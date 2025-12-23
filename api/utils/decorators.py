@@ -16,7 +16,7 @@ def subscribe_to_blocks(decorator_task):
             response = view_func(request, *args, **kwargs)
             user_id = kwargs.get('user_id')
             if isinstance(response, Response) and response.status_code in [200, 201, 202]:
-                if view_func.__name__ == 'load_tress':
+                if view_func.__name__ == 'load_trees':
                     data = [str(block_id) for tree in response.data.values() for block_id in tree.keys()]
                 elif view_func.__name__ == 'create_block':
                     user_id = request.user.id

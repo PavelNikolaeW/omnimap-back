@@ -132,19 +132,6 @@ class BlockPermission(models.Model):
         return f"{self.block} | {self.user} => {self.permission}"
 
 
-# class BlockGroupPermission(models.Model):
-#     id = models.BigAutoField(primary_key=True)
-#     block = models.ForeignKey('Block', on_delete=models.CASCADE, related_name='group_permissions')
-#     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='block_group_permissions')
-#     permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
-#
-#     class Meta:
-#         unique_together = ('block', 'group',)
-#
-#     def __str__(self):
-#         return f"{self.block} | {self.group} => {self.permission}"
-#
-
 class BlockLink(models.Model):
     """
     Модель для хранения ссылок между блоками.

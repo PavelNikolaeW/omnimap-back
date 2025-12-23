@@ -253,7 +253,9 @@ def import_blocks_task(self, payload, user_id, default_perms):
     try:
         user = User.objects.get(id=user_id)
         rep = import_blocks(payload_blocks=payload, user=user, default_permissions=default_perms, task=self)
+        print(f'{rep.problem_blocks}')
         if not rep:
+            print('FALSE')
             return False
 
         blocks_update = set()
@@ -272,9 +274,9 @@ def import_blocks_task(self, payload, user_id, default_perms):
                         permission=permission,
                         start_block_ids=[],
                     )
+        if rep.problem_blocks:
+            self.update_state(status='ERROR', meta={'result': rep.problem_blocks})
 
-
-    #     todo тут же вызываем таски и подписываем пользователей на блоки
     except Exception as e:
         print(f"Error in import_blocks_task: {e}")
         self.retry(exc=e, countdown=5)

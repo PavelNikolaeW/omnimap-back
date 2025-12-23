@@ -1,20 +1,21 @@
 from django.urls import path
 
 from .view_delete_tree import delete_tree
-from .views import (RegisterView, load_tress, create_block, create_link_on_block,
+from .views import (RegisterView, load_trees, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
                     TaskStatusView, create_new_tree, ImportBlocksView)
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
     GroupMembersView
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
-from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree
+from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree, load_nodes
 
 app_name = 'api'
 
 urlpatterns = [
-    path('load-trees/', load_tress, name='root-block'),
+    path('load-trees/', load_trees, name='root-block'),
     path('load-empty/', load_empty_blocks, name='load-empty'),
     path('load-tree/', load_tree, name='load-tree'),
+    path('load-nodes/', load_nodes, name='load-nodes'),
     path('import/', ImportBlocksView.as_view(), name='import-json'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
