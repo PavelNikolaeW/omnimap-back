@@ -50,7 +50,19 @@ class TaskStatusView(APIView):
     def get(self, request, task_id):
         """
         Получает статус задачи Celery по task_id.
+        Проверяет, что задача принадлежит текущему пользователю через Redis.
         """
+        from api.utils.task_utils import get_task_owner
+
+        # Проверяем владельца задачи
+        task_owner_id = get_task_owner(task_id)
+
+        if task_owner_id is not None and task_owner_id != request.user.id:
+            return Response(
+                {'detail': 'You do not have permission to view this task'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         task_result = AsyncResult(task_id)
         response_data = {
             'task_id': task_id,
@@ -77,34 +89,38 @@ class BlockSearchAPIView(generics.ListAPIView):
     ordering = ['-updated_at', 'id']
     ordering_fields = ['updated_at']
 
+    # Максимальная глубина рекурсии для поиска в поддереве
+    MAX_SUBTREE_DEPTH = 50
+
     def _get_subtree_ids(self, root_id):
         """
         Возвращает список UUID всех блоков в поддереве с корнем root_id (включая сам root_id),
         учитывая обычные связи и линковые блоки без использования EXISTS.
+        Ограничено MAX_SUBTREE_DEPTH уровнями для защиты от DoS.
         """
-        table = Block._meta.db_table
         with connection.cursor() as cursor:
-            cursor.execute(f"""
+            cursor.execute("""
                 WITH RECURSIVE subtree AS (
-                    -- базовый случай: берем id и data
-                    SELECT id, data
-                      FROM {table}
+                    -- базовый случай: берем id, data и глубину
+                    SELECT id, data, 1 AS depth
+                      FROM api_block
                      WHERE id = %s
 
                     UNION ALL
 
-                    -- рекурсивный случай: берем id и data
-                    SELECT b.id, b.data
-                      FROM {table} b
-                      JOIN subtree s 
+                    -- рекурсивный случай: берем id, data и увеличиваем глубину
+                    SELECT b.id, b.data, s.depth + 1
+                      FROM api_block b
+                      JOIN subtree s
                         ON b.parent_id = s.id
                         OR (
                             s.data->>'view' = 'link'
                             AND (s.data->>'source')::uuid = b.id
                         )
+                     WHERE s.depth < %s
                 )
                 SELECT DISTINCT id FROM subtree;
-            """, [str(root_id)])
+            """, [str(root_id), self.MAX_SUBTREE_DEPTH])
             return [row[0] for row in cursor.fetchall()]
 
     def get_queryset(self):
@@ -168,6 +184,15 @@ class AccessBlockView(APIView):
         """Возвращает все права доступа, выданные для указанного блока."""
 
         block = get_object_or_404(Block, pk=block_id)
+
+        # Проверяем, что пользователь имеет право на управление доступом
+        if not BlockPermission.objects.filter(
+            block=block,
+            user=request.user,
+            permission__in=('edit_ac', 'delete')
+        ).exists():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
         block_permissions = BlockPermission.objects.filter(block__id=block_id).select_related('user')
         if not block_permissions.exists():
             return Response({'error': 'Block does not exist'}, status=status.HTTP_404_NOT_FOUND)
@@ -201,6 +226,8 @@ class AccessBlockView(APIView):
                                               permission__in=('edit_ac', 'delete')).exists():
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
+        from api.utils.task_utils import save_task_owner
+
         if target_username:
             target_user = get_object_or_404(User, username=target_username)
             task = set_block_permissions_task.delay(
@@ -219,6 +246,9 @@ class AccessBlockView(APIView):
                 new_permission=permission_type,
             )
             detail_msg = "Permission update task has been started for group."
+
+        # Сохраняем владельца задачи для проверки прав доступа
+        save_task_owner(task.id, initiator.id)
 
         return Response(
             {"task_id": task.id, "detail": detail_msg},
@@ -454,7 +484,17 @@ def edit_block(request, block_id):
     block = get_object_or_404(Block, id=block_id)
     block.title = request.data.get('title', block.title)
     data = request.data.get('data', {})
+
+    # Валидация: data должен быть словарём
+    if not isinstance(data, dict):
+        return Response(
+            {"detail": "data must be a JSON object"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Удаляем системные поля, которые нельзя редактировать напрямую
     data.pop('source', None)
+
     block.data.update(data)
     if block.data.get('customGrid', {}).get('reset'):
         block.data.pop('customGrid')
@@ -498,7 +538,7 @@ class CopyBlockView(APIView):
       }
     }
     """
-    validate_res = False
+    permission_classes = [IsAuthenticated]
     MAX_DEPTH_COPY = 50
 
     def copy_hierarchy(self, user_id, src_ids):
@@ -628,41 +668,48 @@ class CopyBlockView(APIView):
 
         return validated_uuids, None
 
-    def validation(self, request, block_dest_id, src_ids):
+    def validate_permissions(self, request, block_dest_id, src_ids):
+        """
+        Проверяет права доступа. Возвращает (True, None) если всё ок,
+        или (False, (error_dict, status_code)) если есть ошибка.
+        """
         if not block_dest_id or not src_ids:
-            self.validate_res = {"detail": "dest and src_ids is required"}, status.HTTP_400_BAD_REQUEST
+            return False, ({"detail": "dest and src_ids is required"}, status.HTTP_400_BAD_REQUEST)
 
         if not BlockPermission.objects.filter(
                 block__id=block_dest_id,
                 user=request.user,
                 permission__in=['edit', 'edit_ac', 'delete']
         ).exists():
-            self.validate_res = {'detail': f'Forbidden {block_dest_id}'}, status.HTTP_403_FORBIDDEN
+            return False, ({'detail': f'Forbidden {block_dest_id}'}, status.HTTP_403_FORBIDDEN)
+
         if not all(BlockPermission.objects.filter(block__id=src_id,
                                                   user=request.user,
                                                   permission__in=['view', 'edit', 'edit_ac', 'delete']).exists() for
-                   src_id in
-                   src_ids):
-            self.validate_res = {'detail': 'Forbidden'}, status.HTTP_403_FORBIDDEN
-        if self.validate_res:
-            return True
-        return False
+                   src_id in src_ids):
+            return False, ({'detail': 'Forbidden'}, status.HTTP_403_FORBIDDEN)
+
+        return True, None
 
     def post(self, request):
         user = request.user
-        if not user.is_authenticated:
-            return Response({"detail": "Authentication required"}, status=status.HTTP_403_FORBIDDEN)
 
         block_dest_id = request.data.get('dest')  # строка
         src_ids = request.data.get('src', [])  # список строк
 
-        block_dest = get_object_or_404(Block, id=block_dest_id)
-        if self.validation(request, block_dest_id, src_ids):
-            return Response(self.validate_res[0], self.validate_res[1])
+        # Проверяем наличие src_ids перед другими операциями
+        if not src_ids:
+            return Response({"detail": "src_ids is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        validated_src_ids, error = self.validate_uuid_list(src_ids)
-        if error:
-            self.validate_res = error, status.HTTP_400_BAD_REQUEST
+        block_dest = get_object_or_404(Block, id=block_dest_id)
+
+        is_valid, error = self.validate_permissions(request, block_dest_id, src_ids)
+        if not is_valid:
+            return Response(error[0], error[1])
+
+        validated_src_ids, uuid_error = self.validate_uuid_list(src_ids)
+        if uuid_error:
+            return Response(uuid_error, status=status.HTTP_400_BAD_REQUEST)
 
         copies, mapped, err = self.copy_hierarchy(user.id, validated_src_ids)
         if err:
@@ -706,7 +753,10 @@ class CopyBlockView(APIView):
         # Асинхронная отправка сообщений об обновлении блоков
         send_message_block_update.delay(block_dest.id, get_object_for_block(block_dest))
         send_message_subscribe_user.delay(list(copies.keys()), [user.id])
-        return Response(copies, status=status.HTTP_200_OK, headers={'x-copy-block-id': mapped[src_ids[0]]})
+
+        # Безопасное получение ID первого скопированного блока
+        first_copy_id = mapped.get(src_ids[0], '') if src_ids and mapped else ''
+        return Response(copies, status=status.HTTP_200_OK, headers={'x-copy-block-id': first_copy_id})
 
 
 def get_flat_map(user_id, block_ids):
@@ -732,13 +782,22 @@ class ImportBlocksView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        from api.utils.task_utils import save_task_owner
+
         data = request.data
         payload = data.get('payload', [])
         if not payload and isinstance(data, dict):
             payload = [item for item in data.values()]
         user = request.user
-        default_perms = request.data.get('default_perms', [{'user_id': user.id, 'permission': 'delete'}])
+
+        # Безопасные default_perms — игнорируем пользовательский ввод
+        default_perms = [{'user_id': user.id, 'permission': 'delete'}]
+
         task = import_blocks_task.delay(payload=payload, user_id=user.id, default_perms=default_perms)
+
+        # Сохраняем владельца задачи для проверки прав доступа
+        save_task_owner(task.id, user.id)
+
         return Response(data={"task_id": task.id},
                         status=status.HTTP_202_ACCEPTED)
 
