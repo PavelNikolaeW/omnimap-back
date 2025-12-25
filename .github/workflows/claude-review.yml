@@ -1,0 +1,22 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          direct_prompt: |
+            Review this pull request for bugs and security issues.
+            Only report found bugs and potential security vulnerabilities.
+            Be concise.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
