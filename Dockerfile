@@ -12,8 +12,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Скопируем проект
 COPY . ./
 
-CMD ["rm", ".env"]
-
 # Установим зависимости Python
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -23,11 +21,8 @@ ENV PYTHONUNBUFFERED=1 \
     DJANGO_SETTINGS_MODULE=block_api.settings \
     PATH="/block_api/venv/bin:$PATH"
 
-# Копируем конфигурацию supervisord
-#COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# Открываем порт
+EXPOSE 8000
 
-# Открываем порт (если нужно)
-#EXPOSE 8000
-
-# Старт
-#CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Старт Django
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

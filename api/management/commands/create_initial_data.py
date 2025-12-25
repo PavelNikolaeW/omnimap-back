@@ -15,7 +15,7 @@ class Command(BaseCommand):
             admin = User.objects.create_superuser('admin', 'admin@example.com',
                                                   os.environ.get('DJANGO_ADMIN_PASS', 'admin'))
             admin_block = Block.objects.create(title='admin', creator=admin)
-            BlockPermission.objects.create(block=admin_block, user=admin, permission='delete')
+            BlockPermission.objects.create(block=admin_block, creator=admin, permission='delete')
             self.stdout.write(self.style.SUCCESS('Суперпользователь andin создан.'))
 
         if not User.objects.filter(username='main_page').exists():
