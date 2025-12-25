@@ -33,13 +33,20 @@ def determine_user_id(view_func):
     Декоратор для определения user_id:
     - Если пользователь аутентифицирован, используется его ID.
     - Иначе используется ID пользователя с username 'main_page'.
+    - Если 'main_page' не существует, возвращает 403 Forbidden.
     """
     @wraps(view_func)
     def _wrapped_view(request, *args, **kwargs):
         if request.user.is_authenticated:
             user_id = request.user.id
         else:
-            user_id = User.objects.get(username='main_page').id
+            try:
+                user_id = User.objects.get(username='main_page').id
+            except User.DoesNotExist:
+                return Response(
+                    {"detail": "Anonymous access is not configured"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
         kwargs['user_id'] = user_id
         return view_func(request, *args, **kwargs)
     return _wrapped_view

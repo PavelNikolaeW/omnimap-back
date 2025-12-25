@@ -3,9 +3,10 @@ from uuid import UUID
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db import IntegrityError, transaction, connection
-from .models import Block, BlockPermission, BlockLink
+from .models import Block, BlockPermission, BlockLink, ALLOWED_SHOW_PERMISSIONS
 from .serializers import get_object_for_block
 from api.tasks import send_message_block_update
 from .utils.query import restore_deleted_branch, delete_tree_query
@@ -15,10 +16,21 @@ class BlockHistoryListView(APIView):
     """
     Предоставляет список всех исторических записей для конкретного блока.
     GET /api/blocks/<uuid>/history/
+    Требует авторизации и права просмотра блока.
     """
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, block_id):
         block = get_object_or_404(Block, id=block_id)
+
+        # Проверяем права доступа к блоку
+        if not BlockPermission.objects.filter(
+            block=block,
+            user=request.user,
+            permission__in=ALLOWED_SHOW_PERMISSIONS
+        ).exists():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
         history = block.history.all().order_by('-history_date')
         history_list = []
         for record in history:
@@ -43,7 +55,9 @@ class BlockHistoryUndoView(APIView):
         - copy-block
         - move-block
         - delete-tree
+    Требует авторизации.
     """
+    permission_classes = [IsAuthenticated]
 
     EDIT_PERMS = ['edit', 'edit_ac', 'delete']
     FORCE_PERMS = ['delete']

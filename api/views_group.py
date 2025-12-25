@@ -98,7 +98,6 @@ class GroupRemoveMemberView(APIView):
     def delete(self, request, group_id, username):
         """Удаляет указанного участника, запрещая исключать владельца."""
 
-        print(request.data)
         group = get_object_or_404(Group, id=group_id)
         if group.owner != request.user:
             return Response({"detail": "Only group owner can remove members."},

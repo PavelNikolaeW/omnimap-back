@@ -1,5 +1,6 @@
 """Эндпоинты для управления общими ссылками на блоки."""
 
+import re
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -13,6 +14,9 @@ from api.utils.query import get_block_for_url
 from .tasks import send_message_subscribe_user
 from .utils.decorators import check_block_permissions
 
+# Паттерн для валидации slug: только буквы, цифры, дефисы и подчёркивания
+SLUG_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,100}$')
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -22,6 +26,17 @@ def create_url(request, block_id):
 
     block = get_object_or_404(Block, id=block_id)
     slug = request.data.get('slug')
+
+    # Валидация slug
+    if not slug or not isinstance(slug, str):
+        return Response({'message': 'slug is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not SLUG_PATTERN.match(slug):
+        return Response(
+            {'message': 'Invalid slug format. Use only letters, numbers, hyphens and underscores (1-100 chars)'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     if not BlockUrlLinkModel.objects.filter(slug=slug).exists():
         link = BlockUrlLinkModel.objects.create(source=block, slug=slug, creator=request.user)
         return Response(links_serializer([link]), status=status.HTTP_200_OK)
@@ -72,13 +87,20 @@ def block_url(request, slug):
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
-    send_message_subscribe_user(list(data.keys()), [-1])
+    # Исправлено: используем .delay() для асинхронного вызова
+    send_message_subscribe_user.delay(list(data.keys()), [-1])
     return Response(data, status=status.HTTP_200_OK)
 
 
-@api_view(['GET'])
+@api_view(['POST'])  # Исправлено: POST вместо GET для запросов с body
 def load_tree(request):
-    source = request.data['tree']
+    """Загружает дерево по ID, если у него есть публичный URL."""
+    source = request.data.get('tree')
+
+    # Исправлено: проверка наличия параметра
+    if not source:
+        return Response({'detail': 'tree parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+
     if not BlockUrlLinkModel.objects.filter(source=source).exists():
         return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -94,8 +116,18 @@ def load_tree(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def load_nodes(request):
-    source = request.data['tree']
-    if not BlockPermission.objects.filter(block_id=source, user=request.user).exists():
+    """Загружает узлы дерева для авторизованного пользователя."""
+    source = request.data.get('tree')
+
+    # Исправлено: проверка наличия параметра
+    if not source:
+        return Response({'detail': 'tree parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Исправлено: исключаем deny-право из проверки
+    if not BlockPermission.objects.filter(
+        block_id=source,
+        user=request.user
+    ).exclude(permission='deny').exists():
         return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
     with connection.cursor() as cursor:
