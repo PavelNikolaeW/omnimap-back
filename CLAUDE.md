@@ -115,3 +115,33 @@ Tests in `api/tests/`:
 - Use `pytest-django` with fixtures
 - Test files: `test_delete_tree.py`, `test_import_blocks.py`, `test_load_views.py`, `test_views_copy_block.py`
 - `locustfile.py` for load testing
+
+## Cross-Service Changes (ВАЖНО!)
+
+**НИКОГДА не изменяй код других сервисов напрямую!**
+
+Если изменения в backend требуют изменений в других сервисах:
+
+1. **НЕ редактируй** файлы в `omnimap-front`, `llm-gateway` или `omnimap-sync`
+2. **Создай файл задач** `FRONTEND_TASKS.md` или `SERVICE_TASKS.md` в корне этого репозитория:
+   ```markdown
+   # Задачи для других сервисов
+
+   ## omnimap-front
+   - [ ] Обновить вызов API /api/v1/blocks (новый формат ответа)
+   - [ ] Добавить обработку нового поля "metadata"
+
+   ## llm-gateway
+   - [ ] Синхронизировать модель пользователя
+
+   ## omnimap-sync
+   - [ ] Обновить формат сообщения block_update
+   ```
+3. **В PR укажи**, что требуются изменения в других сервисах
+4. Агент, работающий над соответствующим сервисом, выполнит задачи и создаст отдельный PR
+
+**Причина:** Каждый сервис имеет свои тесты. Изменения без прогона тестов ломают CI/CD.
+
+## Incoming Tasks
+
+Проверь файл `BACKEND_TASKS.md` (если существует) — там могут быть задачи от фронтенда или других сервисов.
