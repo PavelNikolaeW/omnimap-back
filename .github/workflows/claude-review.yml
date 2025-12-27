@@ -1,8 +1,8 @@
-name: PR Review
+name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize, reopened]
 
 jobs:
   review:
@@ -21,7 +21,20 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-
-          prompt: "/review-pr REPO: ${{ github.repository }} PR_NUMBER: ${{ github.event.pull_request.number }}"
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            --model claude-3-5-haiku-20241022
+            --allowedTools "Read" "Glob" "Grep" "Bash(gh pr:*)" "Bash(gh api:*)" "Bash(git:*)"
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} for code quality, potential bugs, and best practices.
+
+            First, use 'gh pr diff ${{ github.event.pull_request.number }}' to see the changes.
+            Then read the modified files to understand the context.
+
+            Provide constructive feedback on:
+            - Code correctness and logic errors
+            - Potential bugs or edge cases
+            - Performance considerations
+            - Security issues
+            - Code style and maintainability
+
+            After reviewing, submit a PR review with your findings using 'gh pr review ${{ github.event.pull_request.number }}'.
