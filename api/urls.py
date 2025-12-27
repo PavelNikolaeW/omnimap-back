@@ -3,7 +3,7 @@ from django.urls import path
 from .view_delete_tree import delete_tree
 from .views import (RegisterView, load_trees, create_block, create_link_on_block,
                     CopyBlockView, edit_block, load_empty_blocks, AccessBlockView, BlockSearchAPIView, move_block,
-                    TaskStatusView, create_new_tree, ImportBlocksView)
+                    TaskStatusView, create_new_tree, ImportBlocksView, UserListView)
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
     GroupMembersView
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
@@ -46,4 +46,6 @@ urlpatterns = [
 
     path('blocks/<uuid:block_id>/history/', BlockHistoryListView.as_view(), name='block-history-list'),
     path('undo/', BlockHistoryUndoView.as_view(), name='block-history-undo'),
+
+    path('users/', UserListView.as_view(), name='users-list'),
 ]

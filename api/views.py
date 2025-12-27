@@ -801,3 +801,56 @@ class ImportBlocksView(APIView):
         return Response(data={"task_id": task.id},
                         status=status.HTTP_202_ACCEPTED)
 
+
+class UserListView(generics.ListAPIView):
+    """
+    GET /api/v1/users/
+    Возвращает список всех пользователей с пагинацией. Доступен только администраторам.
+
+    Параметры:
+    - page: номер страницы (по умолчанию 1)
+    - page_size: количество на странице (по умолчанию 200, макс. 200)
+    """
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        return User.objects.all().order_by('-date_joined')
+
+    def list(self, request, *args, **kwargs):
+        if not request.user.is_staff:
+            return Response(
+                {'detail': 'Admin access required'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            users_data = [
+                {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'is_active': user.is_active,
+                    'is_staff': user.is_staff,
+                    'date_joined': user.date_joined,
+                }
+                for user in page
+            ]
+            return self.get_paginated_response(users_data)
+
+        users_data = [
+            {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'is_active': user.is_active,
+                'is_staff': user.is_staff,
+                'date_joined': user.date_joined,
+            }
+            for user in queryset
+        ]
+        return Response(users_data, status=status.HTTP_200_OK)
+
