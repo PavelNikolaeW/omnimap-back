@@ -1,16 +1,24 @@
 """
 Views для напоминаний, подписок и настроек уведомлений.
 """
+import html
+import re
 import secrets
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+
+# Rate limiting настройки
+TELEGRAM_LINK_RATE_LIMIT = 5  # максимум запросов
+TELEGRAM_LINK_RATE_PERIOD = 3600  # за период в секундах (1 час)
 
 from .models import (
     Block, BlockReminder, BlockChangeSubscription,
@@ -34,6 +42,48 @@ def send_ws_event(event_type: str, user_id: int, data: dict):
         'user_id': user_id,
         'data': data
     })
+
+
+def check_rate_limit(user_id: int, action: str, limit: int, period: int) -> tuple[bool, int]:
+    """
+    Проверяет rate limit для пользователя.
+
+    Returns:
+        (allowed, remaining): разрешено ли действие, сколько попыток осталось
+    """
+    cache_key = f"rate_limit:{action}:{user_id}"
+    current = cache.get(cache_key, 0)
+
+    if current >= limit:
+        return False, 0
+
+    # Инкремент счётчика
+    if current == 0:
+        cache.set(cache_key, 1, period)
+    else:
+        cache.incr(cache_key)
+
+    return True, limit - current - 1
+
+
+def sanitize_text(text: str, max_length: int = 1000) -> str:
+    """
+    Санитизирует пользовательский текст.
+    - Экранирует HTML
+    - Удаляет потенциально опасные символы
+    - Ограничивает длину
+    """
+    if not text:
+        return ""
+
+    # Экранируем HTML
+    text = html.escape(text)
+
+    # Удаляем управляющие символы (кроме \n, \t)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+    # Ограничиваем длину
+    return text[:max_length]
 
 
 def can_access_block(user, block) -> bool:
@@ -399,11 +449,25 @@ class TelegramStatusView(APIView):
 class TelegramLinkView(APIView):
     """
     POST /api/v1/notifications/telegram/link/   - Получить ссылку для привязки
+    Rate limited: 5 запросов в час
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # Генерируем токен
+        # Rate limiting
+        allowed, remaining = check_rate_limit(
+            request.user.id,
+            'telegram_link',
+            TELEGRAM_LINK_RATE_LIMIT,
+            TELEGRAM_LINK_RATE_PERIOD
+        )
+        if not allowed:
+            return Response(
+                {'error': 'Rate limit exceeded. Try again later.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # Генерируем криптографически безопасный токен (256 бит)
         token = secrets.token_urlsafe(32)
         expires_at = timezone.now() + timedelta(
             minutes=settings.TELEGRAM_LINK_TOKEN_EXPIRY_MINUTES
@@ -423,11 +487,13 @@ class TelegramLinkView(APIView):
         bot_username = settings.TELEGRAM_BOT_USERNAME
         link = f"https://t.me/{bot_username}?start={token}"
 
-        return Response({
+        response = Response({
             'link': link,
             'token': token,
             'expires_at': expires_at
         })
+        response['X-RateLimit-Remaining'] = remaining
+        return response
 
 
 class TelegramUnlinkView(APIView):
@@ -557,26 +623,50 @@ class PushTestView(APIView):
 class InternalTelegramLinkView(APIView):
     """
     POST /api/v1/internal/telegram/link/   - Привязка chat_id по токену
+
+    Требует X-Bot-Secret заголовок.
+    Токен одноразовый и истекает через 15 минут.
     """
     permission_classes = []  # Проверяем секрет вручную
 
     def post(self, request):
-        bot_secret = request.headers.get('X-Bot-Secret')
-        if bot_secret != settings.TELEGRAM_BOT_SECRET:
+        # Проверка секрета бота (constant-time comparison)
+        bot_secret = request.headers.get('X-Bot-Secret', '')
+        expected_secret = settings.TELEGRAM_BOT_SECRET
+
+        if not expected_secret or not secrets.compare_digest(bot_secret, expected_secret):
             return Response(
                 {'error': 'Unauthorized'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        token = request.data.get('token')
-        chat_id = request.data.get('chat_id')
+        token = request.data.get('token', '')
+        chat_id = request.data.get('chat_id', '')
         username = request.data.get('username', '')
 
+        # Валидация входных данных
         if not token or not chat_id:
             return Response(
                 {'error': 'token and chat_id required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Проверка формата токена (base64url, 43 символа для 32 байт)
+        if len(token) < 40 or len(token) > 50:
+            return Response(
+                {'error': 'Invalid token format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Санитизация chat_id (только цифры и знак минус для групп)
+        if not re.match(r'^-?\d+$', str(chat_id)):
+            return Response(
+                {'error': 'Invalid chat_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Санитизация username
+        username = sanitize_text(username, max_length=100)
 
         try:
             link_token = TelegramLinkToken.objects.get(
@@ -594,7 +684,7 @@ class InternalTelegramLinkView(APIView):
         settings_obj, _ = UserNotificationSettings.objects.get_or_create(
             user=link_token.user
         )
-        settings_obj.telegram_chat_id = chat_id
+        settings_obj.telegram_chat_id = str(chat_id)
         settings_obj.telegram_username = username
         settings_obj.telegram_enabled = True
         settings_obj.telegram_linked_at = timezone.now()

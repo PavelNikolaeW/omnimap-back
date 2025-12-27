@@ -402,7 +402,7 @@ class TestInternalTelegramAPI:
         """Тест внутреннего API привязки."""
         token = TelegramLinkToken.objects.create(
             user=user,
-            token='test_token_123',
+            token='test_token_123_abcdefghijklmnopqrstuvwxyz_1234',
             expires_at=timezone.now() + timedelta(minutes=15)
         )
 
@@ -410,7 +410,7 @@ class TestInternalTelegramAPI:
             response = bot_client.post(
                 reverse('api:internal-telegram-link'),
                 {
-                    'token': 'test_token_123',
+                    'token': 'test_token_123_abcdefghijklmnopqrstuvwxyz_1234',
                     'chat_id': '987654321',
                     'username': 'telegram_user'
                 },

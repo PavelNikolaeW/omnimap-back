@@ -321,6 +321,26 @@ class BlockReminderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("remind_at must be in the future")
         return value
 
+    def validate_message(self, value):
+        """Санитизация сообщения напоминания."""
+        import html
+        import re
+        if not value:
+            return value
+        # Экранируем HTML
+        value = html.escape(value)
+        # Удаляем управляющие символы (кроме \n, \t)
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+        # Ограничиваем длину
+        return value[:1000]
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
+
     def validate(self, attrs):
         user = self.context['request'].user
         from django.conf import settings
@@ -346,6 +366,30 @@ class BlockReminderUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = BlockReminder
         fields = ['remind_at', 'timezone', 'message', 'repeat']
+
+    def validate_remind_at(self, value):
+        """Валидация времени напоминания."""
+        from django.utils import timezone
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("remind_at must be in the future")
+        return value
+
+    def validate_message(self, value):
+        """Санитизация сообщения."""
+        import html
+        import re
+        if not value:
+            return value
+        value = html.escape(value)
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+        return value[:1000]
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value and value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
 
 
 class ReminderSnoozeSerializer(serializers.Serializer):
@@ -431,6 +475,21 @@ class UserNotificationSettingsSerializer(serializers.ModelSerializer):
 
     def get_telegram_linked(self, obj):
         return bool(obj.telegram_chat_id)
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value and value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
+
+    def validate_quiet_hours_start(self, value):
+        """Валидация времени начала тихих часов."""
+        return value
+
+    def validate_quiet_hours_end(self, value):
+        """Валидация времени окончания тихих часов."""
+        return value
 
 
 class TelegramLinkResponseSerializer(serializers.Serializer):
