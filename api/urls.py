@@ -9,6 +9,15 @@ from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAd
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
 from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree, load_nodes, export_blocks
 from .views_files import BlockFileView
+from .views_notifications import (
+    ReminderListCreateView, ReminderDetailView, ReminderSnoozeView, BlockReminderView,
+    SubscriptionListCreateView, SubscriptionDetailView, BlockSubscriptionView,
+    NotificationSettingsView,
+    TelegramStatusView, TelegramLinkView, TelegramUnlinkView, TelegramTestView,
+    PushSubscribeView, PushUnsubscribeView, PushTestView,
+    InternalTelegramLinkView, InternalTelegramUnlinkView, InternalTelegramStatusView,
+    InternalReminderSnoozeView, InternalReminderDeleteView
+)
 
 app_name = 'api'
 
@@ -50,4 +59,36 @@ urlpatterns = [
     path('undo/', BlockHistoryUndoView.as_view(), name='block-history-undo'),
 
     path('users/', UserListView.as_view(), name='users-list'),
+
+    # Напоминания
+    path('reminders/', ReminderListCreateView.as_view(), name='reminder-list-create'),
+    path('reminders/<uuid:reminder_id>/', ReminderDetailView.as_view(), name='reminder-detail'),
+    path('reminders/<uuid:reminder_id>/snooze/', ReminderSnoozeView.as_view(), name='reminder-snooze'),
+    path('blocks/<uuid:block_id>/reminder/', BlockReminderView.as_view(), name='block-reminder'),
+
+    # Подписки на изменения
+    path('subscriptions/', SubscriptionListCreateView.as_view(), name='subscription-list-create'),
+    path('subscriptions/<uuid:subscription_id>/', SubscriptionDetailView.as_view(), name='subscription-detail'),
+    path('blocks/<uuid:block_id>/subscription/', BlockSubscriptionView.as_view(), name='block-subscription'),
+
+    # Настройки уведомлений
+    path('notifications/settings/', NotificationSettingsView.as_view(), name='notification-settings'),
+
+    # Telegram
+    path('notifications/telegram/status/', TelegramStatusView.as_view(), name='telegram-status'),
+    path('notifications/telegram/link/', TelegramLinkView.as_view(), name='telegram-link'),
+    path('notifications/telegram/unlink/', TelegramUnlinkView.as_view(), name='telegram-unlink'),
+    path('notifications/telegram/test/', TelegramTestView.as_view(), name='telegram-test'),
+
+    # Push
+    path('notifications/push/subscribe/', PushSubscribeView.as_view(), name='push-subscribe'),
+    path('notifications/push/unsubscribe/', PushUnsubscribeView.as_view(), name='push-unsubscribe'),
+    path('notifications/push/test/', PushTestView.as_view(), name='push-test'),
+
+    # Internal API для Telegram бота
+    path('internal/telegram/link/', InternalTelegramLinkView.as_view(), name='internal-telegram-link'),
+    path('internal/telegram/unlink/', InternalTelegramUnlinkView.as_view(), name='internal-telegram-unlink'),
+    path('internal/telegram/status/', InternalTelegramStatusView.as_view(), name='internal-telegram-status'),
+    path('internal/reminders/<uuid:reminder_id>/snooze/', InternalReminderSnoozeView.as_view(), name='internal-reminder-snooze'),
+    path('internal/reminders/<uuid:reminder_id>/', InternalReminderDeleteView.as_view(), name='internal-reminder-delete'),
 ]

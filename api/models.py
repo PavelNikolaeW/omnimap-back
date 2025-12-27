@@ -261,3 +261,182 @@ class BlockFile(models.Model):
         if self.thumbnail:
             self.thumbnail.delete(save=False)
         super().delete(*args, **kwargs)
+
+
+# ============================================================================
+# Модели для напоминаний и уведомлений
+# ============================================================================
+
+REPEAT_CHOICES = [
+    ('none', 'Однократно'),
+    ('daily', 'Ежедневно'),
+    ('weekly', 'Еженедельно'),
+    ('monthly', 'Ежемесячно'),
+]
+
+EMAIL_MODE_CHOICES = [
+    ('off', 'Выключено'),
+    ('fallback', 'Если Telegram недоступен'),
+    ('always', 'Всегда дублировать'),
+]
+
+CHANGE_TYPE_CHOICES = [
+    ('text_change', 'Изменён текст'),
+    ('data_change', 'Изменены свойства'),
+    ('move', 'Блок перемещён'),
+    ('child_add', 'Добавлен дочерний блок'),
+    ('child_delete', 'Удалён дочерний блок'),
+]
+
+
+class BlockReminder(models.Model):
+    """Напоминание о блоке (1 блок = 1 напоминание)"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    block = models.OneToOneField(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='reminder'
+    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reminders')
+
+    remind_at = models.DateTimeField(db_index=True)
+    timezone = models.CharField(max_length=50, default='UTC')
+    message = models.TextField(blank=True)
+
+    repeat = models.CharField(max_length=20, choices=REPEAT_CHOICES, default='none')
+
+    is_sent = models.BooleanField(default=False)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    snoozed_until = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['remind_at', 'is_sent']),
+            models.Index(fields=['user', 'is_sent']),
+        ]
+        verbose_name = 'Напоминание'
+        verbose_name_plural = 'Напоминания'
+
+    def __str__(self):
+        return f"Напоминание для {self.block_id} на {self.remind_at}"
+
+
+class BlockChangeSubscription(models.Model):
+    """Подписка на изменения блока"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name='subscriptions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='block_subscriptions')
+
+    # Глубина отслеживания: 0=только блок, 1,2,3=уровни, -1=все потомки
+    depth = models.SmallIntegerField(default=1)
+
+    # Типы отслеживаемых изменений
+    on_text_change = models.BooleanField(default=True)
+    on_data_change = models.BooleanField(default=True)
+    on_move = models.BooleanField(default=True)
+    on_child_add = models.BooleanField(default=True)
+    on_child_delete = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Rate limiting: последнее уведомление (не чаще 1 раз в минуту)
+    last_notification_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ['block', 'user']
+        indexes = [
+            models.Index(fields=['user']),
+        ]
+        verbose_name = 'Подписка на изменения'
+        verbose_name_plural = 'Подписки на изменения'
+
+    def __str__(self):
+        return f"Подписка {self.user} на {self.block_id}"
+
+
+class UserNotificationSettings(models.Model):
+    """Настройки уведомлений пользователя"""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='notification_settings')
+
+    # Telegram
+    telegram_chat_id = models.CharField(max_length=50, blank=True, null=True)
+    telegram_username = models.CharField(max_length=100, blank=True, null=True)
+    telegram_enabled = models.BooleanField(default=False)
+    telegram_linked_at = models.DateTimeField(null=True, blank=True)
+
+    # Email
+    email_enabled = models.BooleanField(default=True)
+    email_mode = models.CharField(max_length=20, choices=EMAIL_MODE_CHOICES, default='fallback')
+
+    # Push уведомления в браузере
+    push_enabled = models.BooleanField(default=False)
+    push_subscription = models.JSONField(null=True, blank=True)
+
+    # Тихие часы
+    quiet_hours_enabled = models.BooleanField(default=False)
+    quiet_hours_start = models.TimeField(null=True, blank=True)
+    quiet_hours_end = models.TimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=50, default='UTC')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Настройки уведомлений'
+        verbose_name_plural = 'Настройки уведомлений'
+
+    def __str__(self):
+        return f"Настройки уведомлений для {self.user.username}"
+
+
+class TelegramLinkToken(models.Model):
+    """Временный токен для привязки Telegram аккаунта"""
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['token', 'used']),
+        ]
+        verbose_name = 'Токен привязки Telegram'
+        verbose_name_plural = 'Токены привязки Telegram'
+
+    def __str__(self):
+        return f"Token for {self.user.username} (expires: {self.expires_at})"
+
+
+class PendingNotification(models.Model):
+    """Очередь уведомлений для агрегации"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pending_notifications')
+    subscription = models.ForeignKey(
+        BlockChangeSubscription,
+        on_delete=models.CASCADE,
+        related_name='pending_notifications'
+    )
+    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name='pending_notifications')
+
+    change_type = models.CharField(max_length=20, choices=CHANGE_TYPE_CHOICES)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='changes_made'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'created_at']),
+        ]
+        verbose_name = 'Отложенное уведомление'
+        verbose_name_plural = 'Отложенные уведомления'
+
+    def __str__(self):
+        return f"Pending: {self.change_type} on {self.block_id}"

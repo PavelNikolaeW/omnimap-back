@@ -12,7 +12,7 @@ from api.models import Block, BlockLink, BlockPermission
 from api.utils.decorators import check_block_permissions
 from api.serializers import get_object_for_block
 from api.utils.query import delete_tree_query
-from api.tasks import send_message_block_update, send_message_unsubscribe_user
+from api.tasks import send_message_block_update, send_message_unsubscribe_user, notify_block_change
 
 
 # ---------- force_delete_tree ----------
@@ -104,6 +104,11 @@ def delete_tree(request, tree_id):
     for block in updated_targets:
         send_message_block_update.delay(str(block.id), get_object_for_block(block))
     send_message_unsubscribe_user.delay([str(block.id) for block in updated_targets])
+
+    # Уведомление об удалении дочернего блока
+    if parent:
+        notify_block_change.delay(str(parent.id), 'child_delete', request.user.id)
+
     return Response(
         {
             "parent": get_object_for_block(parent) if parent else {},

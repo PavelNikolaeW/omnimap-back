@@ -33,7 +33,8 @@ from .serializers import (RegisterSerializer,
 from api.utils.query import get_all_trees_query, \
     load_empty_blocks_query
 from .tasks import send_message_block_update, send_message_subscribe_user, \
-    set_block_group_permissions_task, set_block_permissions_task, import_blocks_task
+    set_block_group_permissions_task, set_block_permissions_task, import_blocks_task, \
+    notify_block_change
 from .utils.decorators import subscribe_to_blocks, determine_user_id, check_block_permissions
 from celery.result import AsyncResult
 
@@ -407,6 +408,9 @@ def create_block(request, parent_id):
     send_message_block_update.delay(str(parent_block.id), get_object_for_block(parent_block))
     send_message_block_update.delay(str(new_block.id), get_object_for_block(new_block))
 
+    # Уведомление о добавлении дочернего блока
+    notify_block_change.delay(str(parent_block.id), 'child_add', user.id)
+
     return Response([get_object_for_block(new_block), get_object_for_block(parent_block)],
                     status=status.HTTP_201_CREATED)
 
@@ -520,6 +524,12 @@ def move_block(request, old_parent_id, new_parent_id, child_id):
         res = [get_object_for_block(new_parent), get_object_for_block(old_parent), get_object_for_block(child)]
         send_message_block_update.delay(old_parent.id, get_object_for_block(old_parent))
         send_message_block_update.delay(new_parent.id, get_object_for_block(new_parent))
+
+        # Уведомления о перемещении
+        notify_block_change.delay(str(child.id), 'move', request.user.id)
+        notify_block_change.delay(str(old_parent.id), 'child_delete', request.user.id)
+        notify_block_change.delay(str(new_parent.id), 'child_add', request.user.id)
+
     return Response(res, status=status.HTTP_200_OK)
 
 
@@ -530,6 +540,9 @@ def edit_block(request, block_id):
     """Обновляет заголовок и данные блока, исключая системные поля."""
 
     block = get_object_or_404(Block, id=block_id)
+    old_text = block.data.get('text', '')
+    old_title = block.title
+
     block.title = request.data.get('title', block.title)
     data = request.data.get('data', {})
 
@@ -548,6 +561,14 @@ def edit_block(request, block_id):
         block.data.pop('customGrid')
     block.save()
     send_message_block_update.delay(block.id, get_object_for_block(block))
+
+    # Определяем тип изменения и отправляем уведомление
+    new_text = block.data.get('text', '')
+    if new_text != old_text or block.title != old_title:
+        notify_block_change.delay(str(block.id), 'text_change', request.user.id)
+    elif data:
+        notify_block_change.delay(str(block.id), 'data_change', request.user.id)
+
     return Response(get_object_for_block(block), status=status.HTTP_200_OK)
 
 

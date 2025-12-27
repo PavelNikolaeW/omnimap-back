@@ -7,7 +7,8 @@ from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
-    Block, Group,
+    Block, Group, BlockReminder, BlockChangeSubscription,
+    UserNotificationSettings, REPEAT_CHOICES, EMAIL_MODE_CHOICES,
 )
 
 FORBIDDEN_BLOCK = {'id': '',
@@ -277,3 +278,232 @@ class ImportBlockItemSerializer(serializers.Serializer):
 
 class ImportBlocksSerializer(serializers.Serializer):
     blocks = ImportBlockItemSerializer(many=True)
+
+
+# ============================================================================
+# Сериализаторы для напоминаний и уведомлений
+# ============================================================================
+
+class BlockReminderSerializer(serializers.ModelSerializer):
+    block_id = serializers.UUIDField(write_only=True)
+    block_text = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = BlockReminder
+        fields = [
+            'id', 'block_id', 'block', 'remind_at', 'timezone', 'message',
+            'repeat', 'is_sent', 'sent_at', 'snoozed_until',
+            'created_at', 'updated_at', 'block_text'
+        ]
+        read_only_fields = [
+            'id', 'block', 'is_sent', 'sent_at', 'snoozed_until',
+            'created_at', 'updated_at'
+        ]
+
+    def get_block_text(self, obj):
+        return obj.block.data.get('text', obj.block.title or '')[:200]
+
+    def validate_block_id(self, value):
+        try:
+            block = Block.objects.get(id=value)
+        except Block.DoesNotExist:
+            raise serializers.ValidationError("Block not found")
+
+        # Проверяем, нет ли уже напоминания для этого блока
+        if BlockReminder.objects.filter(block_id=value).exists():
+            raise serializers.ValidationError("Reminder already exists for this block")
+
+        return value
+
+    def validate_remind_at(self, value):
+        from django.utils import timezone
+        if value <= timezone.now():
+            raise serializers.ValidationError("remind_at must be in the future")
+        return value
+
+    def validate_message(self, value):
+        """Санитизация сообщения напоминания."""
+        import html
+        import re
+        if not value:
+            return value
+        # Экранируем HTML
+        value = html.escape(value)
+        # Удаляем управляющие символы (кроме \n, \t)
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+        # Ограничиваем длину
+        return value[:1000]
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        from django.conf import settings
+
+        # Проверяем лимит напоминаний
+        current_count = BlockReminder.objects.filter(user=user).count()
+        if current_count >= settings.MAX_REMINDERS_PER_USER:
+            raise serializers.ValidationError(
+                f"Maximum reminders limit reached ({settings.MAX_REMINDERS_PER_USER})"
+            )
+
+        return attrs
+
+    def create(self, validated_data):
+        block_id = validated_data.pop('block_id')
+        block = Block.objects.get(id=block_id)
+        validated_data['block'] = block
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class BlockReminderUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BlockReminder
+        fields = ['remind_at', 'timezone', 'message', 'repeat']
+
+    def validate_remind_at(self, value):
+        """Валидация времени напоминания."""
+        from django.utils import timezone
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("remind_at must be in the future")
+        return value
+
+    def validate_message(self, value):
+        """Санитизация сообщения."""
+        import html
+        import re
+        if not value:
+            return value
+        value = html.escape(value)
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+        return value[:1000]
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value and value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
+
+
+class ReminderSnoozeSerializer(serializers.Serializer):
+    minutes = serializers.IntegerField(min_value=1, max_value=1440)
+
+
+class BlockChangeSubscriptionSerializer(serializers.ModelSerializer):
+    block_id = serializers.UUIDField(write_only=True)
+    block_text = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = BlockChangeSubscription
+        fields = [
+            'id', 'block_id', 'block', 'depth',
+            'on_text_change', 'on_data_change', 'on_move',
+            'on_child_add', 'on_child_delete',
+            'created_at', 'last_notification_at', 'block_text'
+        ]
+        read_only_fields = ['id', 'block', 'created_at', 'last_notification_at']
+
+    def get_block_text(self, obj):
+        return obj.block.data.get('text', obj.block.title or '')[:200]
+
+    def validate_block_id(self, value):
+        try:
+            Block.objects.get(id=value)
+        except Block.DoesNotExist:
+            raise serializers.ValidationError("Block not found")
+        return value
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        block_id = attrs.get('block_id')
+        from django.conf import settings
+
+        # Проверяем, что подписки ещё нет
+        if BlockChangeSubscription.objects.filter(block_id=block_id, user=user).exists():
+            raise serializers.ValidationError("Subscription already exists for this block")
+
+        # Проверяем лимит подписок
+        current_count = BlockChangeSubscription.objects.filter(user=user).count()
+        if current_count >= settings.MAX_SUBSCRIPTIONS_PER_USER:
+            raise serializers.ValidationError(
+                f"Maximum subscriptions limit reached ({settings.MAX_SUBSCRIPTIONS_PER_USER})"
+            )
+
+        return attrs
+
+    def create(self, validated_data):
+        block_id = validated_data.pop('block_id')
+        block = Block.objects.get(id=block_id)
+        validated_data['block'] = block
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class BlockChangeSubscriptionUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BlockChangeSubscription
+        fields = [
+            'depth', 'on_text_change', 'on_data_change',
+            'on_move', 'on_child_add', 'on_child_delete'
+        ]
+
+
+class UserNotificationSettingsSerializer(serializers.ModelSerializer):
+    telegram_linked = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = UserNotificationSettings
+        fields = [
+            'telegram_chat_id', 'telegram_username', 'telegram_enabled',
+            'telegram_linked_at', 'telegram_linked',
+            'email_enabled', 'email_mode',
+            'push_enabled', 'push_subscription',
+            'quiet_hours_enabled', 'quiet_hours_start', 'quiet_hours_end',
+            'timezone', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'telegram_chat_id', 'telegram_username', 'telegram_linked_at',
+            'created_at', 'updated_at'
+        ]
+
+    def get_telegram_linked(self, obj):
+        return bool(obj.telegram_chat_id)
+
+    def validate_timezone(self, value):
+        """Проверяем валидность timezone."""
+        import pytz
+        if value and value not in pytz.all_timezones:
+            raise serializers.ValidationError(f"Invalid timezone: {value}")
+        return value
+
+    def validate_quiet_hours_start(self, value):
+        """Валидация времени начала тихих часов."""
+        return value
+
+    def validate_quiet_hours_end(self, value):
+        """Валидация времени окончания тихих часов."""
+        return value
+
+
+class TelegramLinkResponseSerializer(serializers.Serializer):
+    link = serializers.URLField()
+    token = serializers.CharField()
+    expires_at = serializers.DateTimeField()
+
+
+class TelegramStatusSerializer(serializers.Serializer):
+    linked = serializers.BooleanField()
+    username = serializers.CharField(allow_null=True, allow_blank=True)
+    linked_at = serializers.DateTimeField(allow_null=True)
+
+
+class PushSubscriptionSerializer(serializers.Serializer):
+    endpoint = serializers.URLField()
+    keys = serializers.DictField(child=serializers.CharField())
