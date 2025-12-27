@@ -32,6 +32,7 @@
 | `DELETE` | `/api/v1/delete-tree-force/<tree_id>/` | Удаляет блок или дерево даже при наличии ссылок, переназначая их на служебный блок. | Требует права `delete`. |
 | `POST` | `/api/v1/copy-block/` | Копирует одно или несколько поддеревьев в указанный блок-назначение. | Тело: `{ "dest": "<uuid>", "src": ["<uuid>", ...] }`. В ответе возвращается словарь новых блоков и ID их копий. |
 | `POST` | `/api/v1/import/` | Массово создаёт/обновляет блоки. | См. подробное описание структуры ниже. |
+| `POST` | `/api/v1/export/` | Экспортирует блоки в формате, совместимом с import. | Тело: `{ "block_ids": ["<uuid>", ...], "include_children": true, "max_depth": 10, "include_permissions": false }`. См. описание ниже. |
 | `GET` | `/api/v1/search-block/` | Поиск блоков, к которым у пользователя есть доступ. | Параметры: `q` (строка поиска), `root` (UUID корня для ограничения), `everywhere=true` для глобального поиска. Результат пагинирован (`page`, `page_size`). |
 
 ## Права доступа
@@ -155,6 +156,86 @@ Content-Type: application/json
     }
   ]
 }
+```
+
+### Структура данных для `POST /api/v1/export/`
+
+Эндпойнт экспортирует блоки в формате, который можно напрямую передать в `/api/v1/import/`.
+
+#### Параметры запроса
+
+| Поле | Тип | Обязательность | Описание |
+|------|-----|----------------|----------|
+| `block_ids` | `UUID[]` | **Да** | Список UUID корневых блоков для экспорта. |
+| `include_children` | `boolean` | Нет | Включать дочерние блоки рекурсивно (по умолчанию `true`). |
+| `max_depth` | `integer` | Нет | Максимальная глубина экспорта (по умолчанию `LINK_LOAD_DEPTH_LIMIT`). |
+| `include_permissions` | `boolean` | Нет | Включать права доступа в экспорт (по умолчанию `false`). |
+
+#### Пример запроса
+
+```http
+POST /api/v1/export/
+Content-Type: application/json
+
+{
+  "block_ids": ["2d0fd3cb-8c52-4368-b2b7-7bc9088940a0"],
+  "include_children": true,
+  "max_depth": 5,
+  "include_permissions": true
+}
+```
+
+#### Пример ответа
+
+```json
+{
+  "blocks": [
+    {
+      "id": "2d0fd3cb-8c52-4368-b2b7-7bc9088940a0",
+      "title": "Корневой блок",
+      "data": {"childOrder": ["child-uuid-1", "child-uuid-2"]},
+      "parent_id": null,
+      "permissions": {
+        "users": [
+          {"user_id": 1, "permission": "delete"},
+          {"user_id": 2, "permission": "view"}
+        ]
+      }
+    },
+    {
+      "id": "child-uuid-1",
+      "title": "Дочерний блок",
+      "data": {"childOrder": []},
+      "parent_id": "2d0fd3cb-8c52-4368-b2b7-7bc9088940a0"
+    }
+  ],
+  "total": 2
+}
+```
+
+#### Использование с import
+
+Экспортированные данные можно напрямую импортировать:
+
+```javascript
+// Экспорт
+const exportResponse = await fetch('/api/v1/export/', {
+  method: 'POST',
+  body: JSON.stringify({ block_ids: ['uuid1', 'uuid2'] })
+});
+const { blocks } = await exportResponse.json();
+
+// Импорт в другое место (изменяем parent_id)
+blocks.forEach(b => {
+  if (b.parent_id === null) {
+    b.parent_id = 'new-parent-uuid';
+  }
+});
+
+await fetch('/api/v1/import/', {
+  method: 'POST',
+  body: JSON.stringify({ payload: blocks })
+});
 ```
 
 ## Дополнительные замечания
