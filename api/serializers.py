@@ -315,6 +315,12 @@ class BlockReminderSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate_remind_at(self, value):
+        from django.utils import timezone
+        if value <= timezone.now():
+            raise serializers.ValidationError("remind_at must be in the future")
+        return value
+
     def validate(self, attrs):
         user = self.context['request'].user
         from django.conf import settings

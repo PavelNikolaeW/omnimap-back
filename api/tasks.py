@@ -36,6 +36,30 @@ User = get_user_model()
 # celery -A block_api worker --loglevel=info
 # TODO очищать redis от id старых задач
 @shared_task(bind=True, max_retries=3)
+def send_notification_event(self, event_data: dict):
+    """Отправляет событие уведомления (reminder/subscription) через RabbitMQ."""
+    try:
+        with Connection(RABBITMQ_URL) as conn:
+            producer = Producer(conn)
+            message = {
+                'action': 'notification_event',
+                'event_type': event_data.get('type'),
+                'user_id': event_data.get('user_id'),
+                'data': event_data.get('data', {}),
+            }
+            producer.publish(
+                message,
+                exchange=exchange,
+                routing_key=ROUTING_KEY,
+                serializer='json',
+                declare=[exchange],
+            )
+    except Exception as e:
+        logger.error(f'Error sending notification event: {e}')
+        self.retry(exc=e, countdown=5)
+
+
+@shared_task(bind=True, max_retries=3)
 def send_message_block_update(self, block_uuid, block_data):
     block_data = {
         'id': str(block_data['id']),
@@ -514,8 +538,16 @@ def send_reminder_notification(self, reminder_id: str):
 
     # 2. Push уведомление
     if settings_obj and settings_obj.push_enabled and settings_obj.push_subscription:
-        # TODO: Реализовать pywebpush
-        sent_via.append('push')
+        from api.services.push import send_push_reminder
+        success = send_push_reminder(
+            subscription_info=settings_obj.push_subscription,
+            reminder_id=str(reminder.id),
+            block_text=block_text,
+            message=reminder.message,
+            block_url=block_url
+        )
+        if success:
+            sent_via.append('push')
 
     # 3. Email (fallback или always)
     if settings_obj and should_send_email(settings_obj, sent_via):
@@ -669,6 +701,17 @@ def send_change_notification(self, subscription_id: str, block_id: str,
         from api.services.telegram import send_telegram_change_notification
         send_telegram_change_notification(
             chat_id=settings_obj.telegram_chat_id,
+            block_text=block_text,
+            change_type=change_type,
+            changed_by=changed_by.username,
+            block_url=block_url
+        )
+
+    # Push
+    if settings_obj.push_enabled and settings_obj.push_subscription:
+        from api.services.push import send_push_change_notification
+        send_push_change_notification(
+            subscription_info=settings_obj.push_subscription,
             block_text=block_text,
             change_type=change_type,
             changed_by=changed_by.username,

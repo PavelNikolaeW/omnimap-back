@@ -24,6 +24,16 @@ from .serializers import (
     TelegramStatusSerializer, PushSubscriptionSerializer
 )
 from .services.telegram import send_telegram_test_message
+from .tasks import send_notification_event
+
+
+def send_ws_event(event_type: str, user_id: int, data: dict):
+    """Отправляет WebSocket событие через RabbitMQ."""
+    send_notification_event.delay({
+        'type': event_type,
+        'user_id': user_id,
+        'data': data
+    })
 
 
 def can_access_block(user, block) -> bool:
@@ -63,6 +73,16 @@ class ReminderListCreateView(APIView):
         serializer = BlockReminderSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             reminder = serializer.save()
+
+            # WebSocket событие
+            send_ws_event('reminder_created', request.user.id, {
+                'id': str(reminder.id),
+                'block_id': str(reminder.block_id),
+                'remind_at': reminder.remind_at.isoformat(),
+                'timezone': reminder.timezone,
+                'message': reminder.message,
+                'repeat': reminder.repeat
+            })
 
             # Отправляем подтверждение в Telegram, если подключён
             try:
@@ -107,12 +127,33 @@ class ReminderDetailView(APIView):
         serializer = BlockReminderUpdateSerializer(reminder, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+            reminder.refresh_from_db()
+
+            # WebSocket событие
+            send_ws_event('reminder_updated', request.user.id, {
+                'id': str(reminder.id),
+                'block_id': str(reminder.block_id),
+                'remind_at': reminder.remind_at.isoformat(),
+                'timezone': reminder.timezone,
+                'message': reminder.message,
+                'repeat': reminder.repeat
+            })
+
             return Response(BlockReminderSerializer(reminder).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, reminder_id):
         reminder = self.get_object(request, reminder_id)
+        block_id = str(reminder.block_id)
+        reminder_id_str = str(reminder.id)
         reminder.delete()
+
+        # WebSocket событие
+        send_ws_event('reminder_deleted', request.user.id, {
+            'id': reminder_id_str,
+            'block_id': block_id
+        })
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -131,6 +172,14 @@ class ReminderSnoozeView(APIView):
             reminder.snoozed_until = timezone.now() + timedelta(minutes=minutes)
             reminder.is_sent = False
             reminder.save()
+
+            # WebSocket событие
+            send_ws_event('reminder_snoozed', request.user.id, {
+                'id': str(reminder.id),
+                'block_id': str(reminder.block_id),
+                'snoozed_until': reminder.snoozed_until.isoformat()
+            })
+
             return Response(BlockReminderSerializer(reminder).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -193,7 +242,20 @@ class SubscriptionListCreateView(APIView):
             data=request.data, context={'request': request}
         )
         if serializer.is_valid():
-            serializer.save()
+            subscription = serializer.save()
+
+            # WebSocket событие
+            send_ws_event('subscription_created', request.user.id, {
+                'id': str(subscription.id),
+                'block_id': str(subscription.block_id),
+                'depth': subscription.depth,
+                'on_text_change': subscription.on_text_change,
+                'on_data_change': subscription.on_data_change,
+                'on_move': subscription.on_move,
+                'on_child_add': subscription.on_child_add,
+                'on_child_delete': subscription.on_child_delete
+            })
+
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -223,12 +285,35 @@ class SubscriptionDetailView(APIView):
         )
         if serializer.is_valid():
             serializer.save()
+            subscription.refresh_from_db()
+
+            # WebSocket событие
+            send_ws_event('subscription_updated', request.user.id, {
+                'id': str(subscription.id),
+                'block_id': str(subscription.block_id),
+                'depth': subscription.depth,
+                'on_text_change': subscription.on_text_change,
+                'on_data_change': subscription.on_data_change,
+                'on_move': subscription.on_move,
+                'on_child_add': subscription.on_child_add,
+                'on_child_delete': subscription.on_child_delete
+            })
+
             return Response(BlockChangeSubscriptionSerializer(subscription).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, subscription_id):
         subscription = self.get_object(request, subscription_id)
+        block_id = str(subscription.block_id)
+        subscription_id_str = str(subscription.id)
         subscription.delete()
+
+        # WebSocket событие
+        send_ws_event('subscription_deleted', request.user.id, {
+            'id': subscription_id_str,
+            'block_id': block_id
+        })
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -448,8 +533,16 @@ class PushTestView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # TODO: Реализовать отправку push-уведомления через pywebpush
-            return Response({'status': 'sent'})
+            from api.services.push import send_push_test_message
+            success = send_push_test_message(settings_obj.push_subscription)
+
+            if success:
+                return Response({'status': 'sent'})
+            else:
+                return Response(
+                    {'error': 'Failed to send push notification'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
         except UserNotificationSettings.DoesNotExist:
             return Response(
                 {'error': 'Push not configured'},
