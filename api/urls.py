@@ -7,7 +7,7 @@ from .views import (RegisterView, load_trees, create_block, create_link_on_block
 from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAddMemberView, GroupRemoveMemberView, \
     GroupMembersView
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
-from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree, load_nodes
+from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree, load_nodes, export_blocks
 
 app_name = 'api'
 
@@ -17,6 +17,7 @@ urlpatterns = [
     path('load-tree/', load_tree, name='load-tree'),
     path('load-nodes/', load_nodes, name='load-nodes'),
     path('import/', ImportBlocksView.as_view(), name='import-json'),
+    path('export/', export_blocks, name='export-blocks'),
     path('delete-tree/<uuid:tree_id>/', delete_tree, name='delete-tree'),
     path('new-block/<uuid:parent_id>/', create_block, name='new-block'),
     path('new-tree/', create_new_tree, name='new-tree'),

@@ -137,3 +137,134 @@ def load_nodes(request):
 
     data = block_link_serializer(rows, settings.LINK_LOAD_DEPTH_LIMIT)
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def export_blocks(request):
+    """
+    Экспортирует блоки в формате, совместимом с /api/v1/import/.
+
+    Request body:
+    {
+        "block_ids": ["uuid1", "uuid2", ...],  // корневые блоки для экспорта
+        "include_children": true,               // включать дочерние (по умолчанию true)
+        "max_depth": 10,                        // макс. глубина (по умолчанию LINK_LOAD_DEPTH_LIMIT)
+        "include_permissions": false            // включать права (по умолчанию false)
+    }
+
+    Response:
+    {
+        "blocks": [
+            {
+                "id": "uuid",
+                "title": "...",
+                "data": {...},
+                "parent_id": "uuid" | null,
+                "permissions": {...}  // если include_permissions=true
+            },
+            ...
+        ],
+        "total": 42
+    }
+    """
+    block_ids = request.data.get('block_ids', [])
+    include_children = request.data.get('include_children', True)
+    max_depth = request.data.get('max_depth', settings.LINK_LOAD_DEPTH_LIMIT)
+    include_permissions = request.data.get('include_permissions', False)
+
+    # Валидация
+    if not block_ids:
+        return Response(
+            {'detail': 'block_ids is required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not isinstance(block_ids, list):
+        return Response(
+            {'detail': 'block_ids must be an array'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Ограничение глубины
+    max_depth = min(max_depth, settings.LINK_LOAD_DEPTH_LIMIT)
+
+    # Проверяем права на все запрошенные блоки
+    user = request.user
+    accessible_blocks = BlockPermission.objects.filter(
+        block_id__in=block_ids,
+        user=user
+    ).exclude(permission='deny').values_list('block_id', flat=True)
+
+    accessible_set = set(str(bid) for bid in accessible_blocks)
+    requested_set = set(block_ids)
+
+    forbidden_blocks = requested_set - accessible_set
+    if forbidden_blocks:
+        return Response(
+            {'detail': f'Access denied for blocks: {list(forbidden_blocks)}'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # Собираем все блоки
+    all_blocks = []
+
+    for block_id in block_ids:
+        if include_children:
+            # Загружаем дерево рекурсивно
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    get_block_for_url,
+                    {'block_id': block_id, 'max_depth': max_depth}
+                )
+                columns = [col[0] for col in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            for row in rows:
+                all_blocks.append(row)
+        else:
+            # Загружаем только указанный блок
+            block = Block.objects.filter(id=block_id).values(
+                'id', 'title', 'data', 'parent_id', 'creator_id', 'updated_at'
+            ).first()
+            if block:
+                all_blocks.append(block)
+
+    # Убираем дубликаты по id
+    seen_ids = set()
+    unique_blocks = []
+    for block in all_blocks:
+        block_id = str(block['id'])
+        if block_id not in seen_ids:
+            seen_ids.add(block_id)
+            unique_blocks.append(block)
+
+    # Форматируем в формат импорта
+    export_data = []
+    for block in unique_blocks:
+        block_export = {
+            'id': str(block['id']),
+            'title': block.get('title'),
+            'data': block.get('data') or {},
+            'parent_id': str(block['parent_id']) if block.get('parent_id') else None,
+        }
+
+        if include_permissions:
+            # Загружаем права для блока
+            perms = BlockPermission.objects.filter(
+                block_id=block['id']
+            ).values('user_id', 'permission')
+
+            block_export['permissions'] = {
+                'users': [
+                    {'user_id': p['user_id'], 'permission': p['permission']}
+                    for p in perms
+                ]
+            }
+
+        export_data.append(block_export)
+
+    return Response({
+        'blocks': export_data,
+        'total': len(export_data)
+    }, status=status.HTTP_200_OK)
