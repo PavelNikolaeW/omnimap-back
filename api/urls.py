@@ -8,6 +8,7 @@ from .views_group import MyGroupsView, GroupCreateView, GroupDeleteView, GroupAd
     GroupMembersView
 from .views_history import BlockHistoryListView, BlockHistoryUndoView
 from .views_url import create_url, check_slug, get_urls, delete_url, block_url, load_tree, load_nodes, export_blocks
+from .views_files import BlockFileView
 
 app_name = 'api'
 
@@ -45,6 +46,7 @@ urlpatterns = [
     path('search-block/', BlockSearchAPIView.as_view(), name='search-block'),
 
     path('blocks/<uuid:block_id>/history/', BlockHistoryListView.as_view(), name='block-history-list'),
+    path('blocks/<uuid:block_id>/file/', BlockFileView.as_view(), name='block-file'),
     path('undo/', BlockHistoryUndoView.as_view(), name='block-history-undo'),
 
     path('users/', UserListView.as_view(), name='users-list'),

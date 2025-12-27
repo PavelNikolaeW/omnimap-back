@@ -69,6 +69,46 @@
 | `GET` | `/api/v1/blocks/<block_id>/history/` | Возвращает историю изменений блока. Требует аутентификации и права `view`, `edit`, `edit_ac` или `delete` на блок. |
 | `POST` | `/api/v1/undo/` | Пытается откатить операцию. Требует аутентификации. Тело: `{ "operation": { "url": "edit-block/<uuid>/", "responseData": ... }, "force": false }`. Поддерживаются операции `new-tree`, `edit-block`, `new-block`, `create-link-block`, `copy-block`, `move-block`, `delete-tree`. |
 
+## Загрузка файлов
+| Метод | URL | Описание |
+|-------|-----|----------|
+| `GET` | `/api/v1/blocks/<block_id>/file/` | Получить информацию о файле блока. Требует права `view`. |
+| `POST` | `/api/v1/blocks/<block_id>/file/` | Загрузить изображение в блок. Требует права `edit`. Один блок — один файл (повторная загрузка заменяет). |
+| `DELETE` | `/api/v1/blocks/<block_id>/file/` | Удалить файл блока. Требует права `edit`. |
+
+### Загрузка файла
+
+```http
+POST /api/v1/blocks/<block_id>/file/
+Content-Type: multipart/form-data
+
+file: <binary>
+```
+
+### Ограничения
+- Максимальный размер: **5 MB**
+- Допустимые форматы: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
+- Один блок может содержать только один файл
+
+### Ответ при успешной загрузке
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "filename": "photo.jpg",
+  "content_type": "image/jpeg",
+  "size": 102400,
+  "width": 1920,
+  "height": 1080,
+  "url": "http://localhost:8000/media/blocks/block-uuid/file.jpg",
+  "thumbnail_url": "http://localhost:8000/media/blocks/block-uuid/thumbs/thumb_file.jpg",
+  "created_at": "2025-12-27T16:00:00.000000Z"
+}
+```
+
+### Превью (thumbnail)
+При загрузке автоматически создаётся уменьшенная версия изображения (300x300 px) с сохранением пропорций.
+
 ### Структура данных для `POST /api/v1/import/`
 
 Эндпойнт ожидает JSON-объект c единственным корневым полем `blocks`. Значение —
