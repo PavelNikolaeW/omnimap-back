@@ -99,8 +99,8 @@ CONTENT_TYPE_MAP = {
 
 ## Чеклист
 
-- [ ] Добавить проверку MAX_IMAGE_DIMENSIONS
-- [ ] Реализовать асинхронную генерацию превью (опционально)
-- [ ] Добавить сжатие JPEG изображений
-- [ ] Добавить type hints в views_files.py
-- [ ] Вынести CONTENT_TYPE_MAP в constants.py
+- [x] Добавить проверку MAX_IMAGE_DIMENSIONS (PR #6)
+- [ ] Реализовать асинхронную генерацию превью (опционально, низкий приоритет)
+- [x] Добавить сжатие JPEG изображений (PR #6)
+- [x] Добавить type hints в views_files.py (PR #6)
+- [x] Вынести CONTENT_TYPE_MAP в constants.py (PR #6)
