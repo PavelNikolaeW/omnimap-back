@@ -198,3 +198,66 @@ class BlockUrlLinkModel(models.Model):
     def get_absolute_url(self):
         from django.urls import reverse
         return reverse('api:block-url', kwargs={'slug': self.slug})
+
+
+def block_file_upload_path(instance, filename):
+    """Генерирует путь для загрузки файла: blocks/{block_id}/{filename}"""
+    return f'blocks/{instance.block_id}/{filename}'
+
+
+def block_thumbnail_upload_path(instance, filename):
+    """Генерирует путь для превью: blocks/{block_id}/thumbs/{filename}"""
+    return f'blocks/{instance.block_id}/thumbs/{filename}'
+
+
+class BlockFile(models.Model):
+    """
+    Файл (изображение), прикреплённый к блоку.
+    Один блок — один файл.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    block = models.OneToOneField(
+        'Block',
+        on_delete=models.CASCADE,
+        related_name='file',
+        verbose_name='Блок'
+    )
+    file = models.ImageField(
+        upload_to=block_file_upload_path,
+        verbose_name='Файл изображения'
+    )
+    thumbnail = models.ImageField(
+        upload_to=block_thumbnail_upload_path,
+        blank=True,
+        null=True,
+        verbose_name='Превью'
+    )
+    filename = models.CharField(max_length=255, verbose_name='Имя файла')
+    content_type = models.CharField(max_length=100, verbose_name='MIME-тип')
+    size = models.PositiveIntegerField(verbose_name='Размер в байтах')
+    width = models.PositiveIntegerField(null=True, blank=True, verbose_name='Ширина')
+    height = models.PositiveIntegerField(null=True, blank=True, verbose_name='Высота')
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='uploaded_files',
+        verbose_name='Загрузил'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Файл блока'
+        verbose_name_plural = 'Файлы блоков'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.filename} ({self.block_id})"
+
+    def delete(self, *args, **kwargs):
+        # Удаляем файлы при удалении записи
+        if self.file:
+            self.file.delete(save=False)
+        if self.thumbnail:
+            self.thumbnail.delete(save=False)
+        super().delete(*args, **kwargs)

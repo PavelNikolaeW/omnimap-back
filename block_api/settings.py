@@ -85,6 +85,8 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PARSER_CLASSES': (
         'rest_framework.parsers.JSONParser',
+        'rest_framework.parsers.MultiPartParser',
+        'rest_framework.parsers.FormParser',
     ),
     'JSON_ENCODER': 'api.models.CustomJSONEncoder',
 }
@@ -190,6 +192,30 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # STATICFILES_DIRS = [
 #     BASE_DIR / 'static',
 # ]
+
+# Media files (uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# File upload settings
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
+ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+THUMBNAIL_SIZE = (300, 300)  # Размер превью
+
+# Storage backend (переключение между локальным и облачным)
+# Для облачного хранилища установить: pip install django-storages boto3
+# и настроить AWS_* или другие переменные окружения
+FILE_STORAGE_BACKEND = os.environ.get('FILE_STORAGE_BACKEND', 'local')  # 'local' или 's3'
+
+# S3 настройки (для cloud.ru Object Storage или AWS S3)
+if FILE_STORAGE_BACKEND == 's3':
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME')
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')  # Для cloud.ru
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ru-central1')
+    AWS_QUERYSTRING_AUTH = False  # Публичные URL
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
