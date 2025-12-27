@@ -17,6 +17,7 @@
 | `POST` | `/api/v1/login/` | Получает пару JWT токенов (access/refresh). Требует `username` и `password`. |
 | `POST` | `/api/v1/token/refresh/` | Обновляет access-токен по refresh-токену. |
 | `POST` | `/api/v1/token/verify/` | Проверяет валидность access- или refresh-токена. |
+| `GET` | `/api/v1/users/` | Возвращает список пользователей с пагинацией. **Только для администраторов** (`is_staff=true`). Параметры: `page`, `page_size` (макс. 200). |
 
 ## Работа с блоками и деревьями
 | Метод | URL | Краткое описание | Важные параметры |
