@@ -51,6 +51,12 @@ class TaskStatusView(APIView):
         """
         Получает статус задачи Celery по task_id.
         Проверяет, что задача принадлежит текущему пользователю через Redis.
+
+        Возвращает:
+        - task_id: ID задачи
+        - status: PENDING | PROGRESS | SUCCESS | FAILURE | RETRY
+        - progress: информация о прогрессе (для PROGRESS)
+        - result: результат выполнения (для SUCCESS и FAILURE)
         """
         from api.utils.task_utils import get_task_owner
 
@@ -64,11 +70,53 @@ class TaskStatusView(APIView):
             )
 
         task_result = AsyncResult(task_id)
+        task_status = task_result.status
+
         response_data = {
             'task_id': task_id,
-            'status': task_result.status,
-            'result': task_result.result if task_result.status == 'SUCCESS' else None,
+            'status': task_status,
         }
+
+        # Обрабатываем разные статусы
+        if task_status == 'PROGRESS':
+            # Задача выполняется — возвращаем информацию о прогрессе
+            meta = task_result.info or {}
+            response_data['progress'] = {
+                'stage': meta.get('stage', 'unknown'),
+                'percent': meta.get('progress', 0),
+                'total_blocks': meta.get('total_blocks'),
+            }
+            response_data['result'] = None
+
+        elif task_status == 'SUCCESS':
+            # Задача завершена успешно — возвращаем результат
+            response_data['result'] = task_result.result
+
+        elif task_status == 'FAILURE':
+            # Задача завершилась с ошибкой
+            error_info = task_result.info
+            if isinstance(error_info, Exception):
+                response_data['result'] = {
+                    'success': False,
+                    'error': str(error_info),
+                    'error_type': type(error_info).__name__
+                }
+            else:
+                response_data['result'] = error_info
+
+        elif task_status == 'RETRY':
+            # Задача будет повторена
+            response_data['result'] = None
+            response_data['message'] = 'Task is being retried'
+
+        elif task_status == 'PENDING':
+            # Задача в очереди или не существует
+            response_data['result'] = None
+
+        else:
+            # Неизвестный статус (например, custom states)
+            response_data['result'] = task_result.info
+
         return Response(response_data)
 
 

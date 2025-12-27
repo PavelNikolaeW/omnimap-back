@@ -250,13 +250,75 @@ def set_block_group_permissions_task(self, initiator_id, group_id, block_id, new
 
 @shared_task(bind=True, max_retries=3)
 def import_blocks_task(self, payload, user_id, default_perms):
+    """
+    Асинхронный импорт блоков.
+
+    Возвращает словарь с результатами:
+    - created: список UUID созданных блоков
+    - updated: список UUID обновлённых блоков
+    - unchanged: список UUID без изменений
+    - deleted: список UUID удалённых блоков
+    - errors: список кодов ошибок
+    - problem_blocks: список проблемных блоков с кодами ошибок
+    """
+    def build_result(rep):
+        """Формирует сериализуемый результат из ImportReport."""
+        return {
+            'created': [str(bid) for bid in rep.created],
+            'updated': [str(bid) for bid in rep.updated],
+            'unchanged': [str(bid) for bid in rep.unchanged],
+            'deleted': [str(bid) for bid in rep.deleted],
+            'permissions_upserted': {
+                str(uid): {perm: bids for perm, bids in perms.items()}
+                for uid, perms in rep.permissions_upserted.items()
+            },
+            'links_upserted': rep.links_upserted,
+            'errors': list(rep.errors),
+            'problem_blocks': [
+                {'block_id': str(item.block_id), 'code': item.code}
+                for item in rep.problem_blocks
+            ]
+        }
+
     try:
+        # Обновляем статус: начало выполнения
+        self.update_state(
+            state='PROGRESS',
+            meta={'stage': 'starting', 'progress': 0}
+        )
+
         user = User.objects.get(id=user_id)
-        rep = import_blocks(payload_blocks=payload, user=user, default_permissions=default_perms, task=self)
-        print(f'{rep.problem_blocks}')
+
+        # Обновляем статус: импорт блоков
+        self.update_state(
+            state='PROGRESS',
+            meta={'stage': 'importing', 'progress': 10, 'total_blocks': len(payload)}
+        )
+
+        rep = import_blocks(
+            payload_blocks=payload,
+            user=user,
+            default_permissions=default_perms,
+            task=self
+        )
+
         if not rep:
-            print('FALSE')
-            return False
+            return {
+                'success': False,
+                'error': 'Import returned empty result',
+                'created': [],
+                'updated': [],
+                'unchanged': [],
+                'deleted': [],
+                'errors': ['import_failed'],
+                'problem_blocks': []
+            }
+
+        # Обновляем статус: отправка уведомлений
+        self.update_state(
+            state='PROGRESS',
+            meta={'stage': 'notifications', 'progress': 80}
+        )
 
         blocks_update = set()
         blocks_update.update(rep.created, rep.updated)
@@ -266,18 +328,47 @@ def import_blocks_task(self, payload, user_id, default_perms):
         if rep.deleted:
             send_message_unsubscribe_user.delay(block_uuids=[str(bid) for bid in rep.deleted])
         if rep.permissions_upserted:
-            for user_id, perm_bids in rep.permissions_upserted.items():
+            for uid, perm_bids in rep.permissions_upserted.items():
                 for permission, bids in perm_bids.items():
                     send_message_access_update.delay(
                         block_uuids=bids,
-                        user_id=user_id,
+                        user_id=uid,
                         permission=permission,
                         start_block_ids=[],
                     )
-        if rep.problem_blocks:
-            self.update_state(status='ERROR', meta={'result': rep.problem_blocks})
+
+        # Формируем результат
+        result = build_result(rep)
+        result['success'] = len(rep.problem_blocks) == 0
+
+        # Возвращаем результат — Celery сохранит его и установит статус SUCCESS
+        return result
+
+    except User.DoesNotExist:
+        return {
+            'success': False,
+            'error': f'User with id={user_id} not found',
+            'created': [],
+            'updated': [],
+            'unchanged': [],
+            'deleted': [],
+            'errors': ['user_not_found'],
+            'problem_blocks': []
+        }
 
     except Exception as e:
-        print(f"Error in import_blocks_task: {e}")
-        self.retry(exc=e, countdown=5)
-        self.update_state(status='ERROR', meta={'result': e})
+        # При ошибке пробуем повторить
+        if self.request.retries < self.max_retries:
+            self.retry(exc=e, countdown=5)
+
+        # Если все попытки исчерпаны, возвращаем ошибку
+        return {
+            'success': False,
+            'error': str(e),
+            'created': [],
+            'updated': [],
+            'unchanged': [],
+            'deleted': [],
+            'errors': ['exception'],
+            'problem_blocks': []
+        }
