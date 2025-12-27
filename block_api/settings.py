@@ -291,3 +291,54 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+
+# ============================================================================
+# Настройки напоминаний и уведомлений
+# ============================================================================
+
+# Лимиты на пользователя
+MAX_REMINDERS_PER_USER = 100
+MAX_SUBSCRIPTIONS_PER_USER = 50
+
+# Rate limiting
+MIN_NOTIFICATION_INTERVAL_SECONDS = 60  # Не чаще 1 раз в минуту на подписку
+
+# Telegram link token
+TELEGRAM_LINK_TOKEN_EXPIRY_MINUTES = 15
+
+# Агрегация уведомлений
+NOTIFICATION_AGGREGATION_WINDOW_SECONDS = 60  # Собираем изменения за 1 минуту
+
+# Telegram
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_BOT_SECRET = os.environ.get('TELEGRAM_BOT_SECRET', '')
+TELEGRAM_BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', '')
+
+# Email
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = True
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'OmniMap <noreply@omnimap.ru>')
+
+# Push (VAPID keys)
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
+VAPID_ADMIN_EMAIL = os.environ.get('VAPID_ADMIN_EMAIL', '')
+
+# Celery Beat Schedule (периодические задачи)
+CELERY_BEAT_SCHEDULE = {
+    'check-reminders-every-minute': {
+        'task': 'api.tasks.check_pending_reminders',
+        'schedule': 60.0,  # каждую минуту
+    },
+    'process-pending-notifications': {
+        'task': 'api.tasks.process_pending_notifications',
+        'schedule': 60.0,  # каждую минуту
+    },
+    'cleanup-expired-telegram-tokens': {
+        'task': 'api.tasks.cleanup_expired_telegram_tokens',
+        'schedule': 6 * 60 * 60,  # каждые 6 часов
+    },
+}

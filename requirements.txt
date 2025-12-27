@@ -35,3 +35,5 @@ uuid6==2024.7.10
 vine==5.1.0
 wcwidth==0.2.13
 whitenoise==6.8.2
+httpx==0.27.2
+pytz==2024.2
