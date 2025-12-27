@@ -1,5 +1,6 @@
 """Эндпоинты для управления общими ссылками на блоки."""
 
+import json
 import re
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
@@ -242,10 +243,18 @@ def export_blocks(request):
     # Форматируем в формат импорта
     export_data = []
     for block in unique_blocks:
+        # Обрабатываем data — из raw SQL приходит строка JSON
+        data = block.get('data') or {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {}
+
         block_export = {
             'id': str(block['id']),
             'title': block.get('title'),
-            'data': block.get('data') or {},
+            'data': data,
             'parent_id': str(block['parent_id']) if block.get('parent_id') else None,
         }
 
