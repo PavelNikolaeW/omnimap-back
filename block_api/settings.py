@@ -199,8 +199,11 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # File upload settings
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_IMAGE_DIMENSIONS = (4096, 4096)  # Максимальные размеры изображения (ширина, высота)
 ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 THUMBNAIL_SIZE = (300, 300)  # Размер превью
+JPEG_QUALITY = 85  # Качество сжатия JPEG
+OPTIMIZE_UPLOADS = True  # Оптимизировать изображения при загрузке
 
 # Storage backend (переключение между локальным и облачным)
 # Для облачного хранилища установить: pip install django-storages boto3

@@ -2,32 +2,43 @@
 
 import io
 import uuid
+from typing import Tuple, Optional, Dict, Any, List
+
 from PIL import Image
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import UploadedFile
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.request import Request
 
 from .models import Block, BlockFile, BlockPermission
+from .constants import CONTENT_TYPE_MAP, get_extension_for_content_type
 
 
-def validate_image(file):
+def validate_image(file: UploadedFile) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
     """
     Валидирует загруженное изображение.
-    Возвращает (is_valid, error_message, image_info).
+
+    Args:
+        file: Загруженный файл
+
+    Returns:
+        Tuple (is_valid, error_message, image_info)
+        image_info содержит width и height при успехе
     """
-    # Проверка размера
-    max_size = getattr(settings, 'MAX_UPLOAD_SIZE', 5 * 1024 * 1024)
+    # Проверка размера файла
+    max_size: int = getattr(settings, 'MAX_UPLOAD_SIZE', 5 * 1024 * 1024)
     if file.size > max_size:
         return False, f'File too large. Max size: {max_size // (1024 * 1024)} MB', None
 
     # Проверка MIME-типа
-    allowed_types = getattr(settings, 'ALLOWED_IMAGE_TYPES',
-                           ['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+    allowed_types: List[str] = getattr(settings, 'ALLOWED_IMAGE_TYPES',
+                                        list(CONTENT_TYPE_MAP.keys()))
     if file.content_type not in allowed_types:
         return False, f'Invalid file type. Allowed: {", ".join(allowed_types)}', None
 
@@ -43,18 +54,76 @@ def validate_image(file):
         width, height = img.size
         file.seek(0)
 
+        # Проверка максимальных размеров изображения
+        max_dimensions: Tuple[int, int] = getattr(settings, 'MAX_IMAGE_DIMENSIONS', (4096, 4096))
+        if width > max_dimensions[0] or height > max_dimensions[1]:
+            return False, f'Image dimensions too large. Max: {max_dimensions[0]}x{max_dimensions[1]}', None
+
         return True, None, {'width': width, 'height': height}
     except Exception as e:
         return False, f'Invalid image file: {str(e)}', None
 
 
-def create_thumbnail(image_file, max_size=None):
+def optimize_image(file: UploadedFile, content_type: str) -> Tuple[ContentFile, int]:
+    """
+    Оптимизирует изображение (сжимает JPEG, оптимизирует PNG).
+
+    Args:
+        file: Загруженный файл
+        content_type: MIME-тип файла
+
+    Returns:
+        Tuple (optimized_content, new_size)
+    """
+    quality: int = getattr(settings, 'JPEG_QUALITY', 85)
+
+    try:
+        file.seek(0)
+        img = Image.open(file)
+
+        output = io.BytesIO()
+
+        if content_type == 'image/jpeg':
+            # Конвертируем в RGB если нужно
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            img.save(output, format='JPEG', quality=quality, optimize=True)
+        elif content_type == 'image/png':
+            img.save(output, format='PNG', optimize=True)
+        elif content_type == 'image/webp':
+            img.save(output, format='WEBP', quality=quality)
+        else:
+            # Для других форматов просто копируем
+            file.seek(0)
+            return ContentFile(file.read()), file.size
+
+        output.seek(0)
+        content = ContentFile(output.read())
+        return content, len(content)
+    except Exception:
+        # При ошибке возвращаем оригинал
+        file.seek(0)
+        return ContentFile(file.read()), file.size
+
+
+def create_thumbnail(
+    image_file: UploadedFile,
+    max_size: Optional[Tuple[int, int]] = None
+) -> Optional[ContentFile]:
     """
     Создаёт превью изображения.
-    Возвращает ContentFile с превью или None при ошибке.
+
+    Args:
+        image_file: Исходный файл изображения
+        max_size: Максимальный размер превью (ширина, высота)
+
+    Returns:
+        ContentFile с превью или None при ошибке
     """
     if max_size is None:
         max_size = getattr(settings, 'THUMBNAIL_SIZE', (300, 300))
+
+    quality: int = getattr(settings, 'JPEG_QUALITY', 85)
 
     try:
         image_file.seek(0)
@@ -69,7 +138,7 @@ def create_thumbnail(image_file, max_size=None):
 
         # Сохраняем в буфер
         thumb_io = io.BytesIO()
-        img.save(thumb_io, format='JPEG', quality=85)
+        img.save(thumb_io, format='JPEG', quality=quality, optimize=True)
         thumb_io.seek(0)
 
         return ContentFile(thumb_io.read())
@@ -77,10 +146,21 @@ def create_thumbnail(image_file, max_size=None):
         return None
 
 
-def check_block_permission(user, block_id, required_permissions):
+def check_block_permission(
+    user: Any,
+    block_id: uuid.UUID,
+    required_permissions: List[str]
+) -> bool:
     """
     Проверяет права пользователя на блок.
-    required_permissions — список допустимых прав (например, ['edit', 'delete']).
+
+    Args:
+        user: Пользователь Django
+        block_id: UUID блока
+        required_permissions: Список допустимых прав
+
+    Returns:
+        True если у пользователя есть одно из требуемых прав
     """
     permission = BlockPermission.objects.filter(
         block_id=block_id,
@@ -95,6 +175,8 @@ def check_block_permission(user, block_id, required_permissions):
 
 class BlockFileView(APIView):
     """
+    Управление файлами блоков.
+
     GET /api/v1/blocks/{block_id}/file/ — получить информацию о файле
     POST /api/v1/blocks/{block_id}/file/ — загрузить файл
     DELETE /api/v1/blocks/{block_id}/file/ — удалить файл
@@ -102,7 +184,7 @@ class BlockFileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
-    def get(self, request, block_id):
+    def get(self, request: Request, block_id: uuid.UUID) -> Response:
         """Получить информацию о файле блока."""
         block = get_object_or_404(Block, id=block_id)
 
@@ -133,7 +215,7 @@ class BlockFileView(APIView):
             'created_at': block_file.created_at.isoformat(),
         })
 
-    def post(self, request, block_id):
+    def post(self, request: Request, block_id: uuid.UUID) -> Response:
         """Загрузить файл в блок."""
         block = get_object_or_404(Block, id=block_id)
 
@@ -151,7 +233,7 @@ class BlockFileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        uploaded_file = request.FILES['file']
+        uploaded_file: UploadedFile = request.FILES['file']
 
         # Валидация изображения
         is_valid, error_msg, image_info = validate_image(uploaded_file)
@@ -168,27 +250,39 @@ class BlockFileView(APIView):
         except BlockFile.DoesNotExist:
             pass
 
+        # Оптимизируем изображение если включено
+        optimize_uploads: bool = getattr(settings, 'OPTIMIZE_UPLOADS', True)
+        content_type: str = uploaded_file.content_type
+        file_size: int = uploaded_file.size
+
+        if optimize_uploads and content_type in ['image/jpeg', 'image/png', 'image/webp']:
+            optimized_content, file_size = optimize_image(uploaded_file, content_type)
+            file_to_save = optimized_content
+        else:
+            uploaded_file.seek(0)
+            file_to_save = ContentFile(uploaded_file.read())
+
         # Генерируем уникальное имя файла
-        ext = uploaded_file.name.split('.')[-1].lower() if '.' in uploaded_file.name else 'jpg'
+        ext = get_extension_for_content_type(content_type)
         new_filename = f"{uuid.uuid4()}.{ext}"
 
         # Создаём превью
+        uploaded_file.seek(0)
         thumbnail_content = create_thumbnail(uploaded_file)
 
         # Создаём запись
         block_file = BlockFile(
             block=block,
             filename=uploaded_file.name,
-            content_type=uploaded_file.content_type,
-            size=uploaded_file.size,
+            content_type=content_type,
+            size=file_size,
             width=image_info['width'] if image_info else None,
             height=image_info['height'] if image_info else None,
             uploaded_by=request.user,
         )
 
         # Сохраняем файл
-        uploaded_file.seek(0)
-        block_file.file.save(new_filename, uploaded_file, save=False)
+        block_file.file.save(new_filename, file_to_save, save=False)
 
         # Сохраняем превью
         if thumbnail_content:
@@ -209,7 +303,7 @@ class BlockFileView(APIView):
             'created_at': block_file.created_at.isoformat(),
         }, status=status.HTTP_201_CREATED)
 
-    def delete(self, request, block_id):
+    def delete(self, request: Request, block_id: uuid.UUID) -> Response:
         """Удалить файл блока."""
         block = get_object_or_404(Block, id=block_id)
 

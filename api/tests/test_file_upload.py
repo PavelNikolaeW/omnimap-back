@@ -212,6 +212,20 @@ class TestFileUpload:
         assert response.status_code == 400
         assert 'too large' in response.data['detail'].lower()
 
+    def test_upload_dimensions_too_large(self, auth_client, block, settings):
+        """Изображение с размерами больше MAX_IMAGE_DIMENSIONS отклоняется."""
+        settings.MAX_IMAGE_DIMENSIONS = (500, 500)  # Маленький лимит для теста
+        settings.MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # Увеличим лимит размера
+
+        url = reverse('api:block-file', kwargs={'block_id': block.id})
+        # Создаём изображение больше лимита размеров
+        image = create_test_image_file(width=600, height=400)
+
+        response = auth_client.post(url, {'file': image}, format='multipart')
+
+        assert response.status_code == 400
+        assert 'dimensions too large' in response.data['detail'].lower()
+
     def test_upload_invalid_type(self, auth_client, block):
         """Неподдерживаемый тип файла отклоняется."""
         url = reverse('api:block-file', kwargs={'block_id': block.id})
